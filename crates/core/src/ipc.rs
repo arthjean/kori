@@ -204,9 +204,10 @@ pub struct DisplayState {
     ///
     /// [`DisplayState::streaming`] cannot say this on its own: it is equally
     /// false for a preset that reads no telemetry and for a panel that was
-    /// never written. The daemon stops a faulted stream until an explicit
-    /// recoverable state arrives, and a screen that cannot see the fault cannot
-    /// offer one.
+    /// never written. The daemon retries a faulted stream on a widening wait
+    /// and clears this only once a frame lands, so a fault still standing is a
+    /// panel still frozen, and a screen that cannot see it cannot offer the
+    /// operator the faster way back.
     pub faulted: Option<String>,
     /// Frames dropped because a transfer was still in flight when the next
     /// sample arrived. The streamer keeps at most one frame pending, so this

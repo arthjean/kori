@@ -51,6 +51,12 @@ use kori_core::ipc::{DisplayOutcome, DisplayState, HardwareState};
 use kori_core::lighting::Brightness;
 use kori_hardware_linux::lcd::{LcdError, LcdLink};
 
+/// How long a stopped stream waits before it sends a frame again.
+const FIRST_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// The longest that wait ever grows to.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+
 /// Owns the panel handle and the record of what it was told to show.
 pub struct DisplayExecutor {
     link: Option<LcdLink>,
@@ -63,13 +69,9 @@ pub struct DisplayExecutor {
     committed: Option<Committed>,
     /// Brightness the panel was last told to use.
     brightness: Option<Brightness>,
-    /// Why streaming stopped, once a transfer failed.
-    ///
-    /// A stream that kept retrying every second would hammer an endpoint that
-    /// has already refused, so it stops until something changes: the device
-    /// coming back, or the operator applying a preset by hand. A faulted
-    /// stream retries only after a reconnect or an explicit recoverable state.
-    faulted: Option<String>,
+    /// Why streaming stopped, once a transfer failed, and when it may try
+    /// again.
+    faulted: Option<Fault>,
     /// Frames discarded because a newer sample replaced them.
     dropped: u64,
     /// The animation playing, when the active preset names one.
@@ -84,6 +86,24 @@ pub struct DisplayExecutor {
 struct Committed {
     preset: DisplayPreset,
     frame: Vec<u8>,
+}
+
+/// A stream that stopped, and the wait before it is allowed to try again.
+///
+/// A stream that kept retrying every second would hammer an endpoint that has
+/// already refused, so the wait starts at [`FIRST_RETRY_DELAY`] and doubles up
+/// to [`MAX_RETRY_DELAY`] for as long as the panel keeps refusing. Waiting is
+/// the part that was missing rather than the retry: a transfer that failed once
+/// is usually a report the interface `kraken2023` shares would not take at that
+/// instant, and a stream that never retries at all leaves the panel frozen on
+/// the last picture it took until an operator applies a preset by hand, in a
+/// window that is usually closed. Nothing here is reported as recovered on its
+/// own: the state stays faulted, with its reason, until a frame actually lands.
+struct Fault {
+    reason: String,
+    /// The wait this fault is serving, doubled on every refusal.
+    delay: Duration,
+    retry_at: Instant,
 }
 
 /// A compiled animation and where the panel is in it.
@@ -162,13 +182,42 @@ impl DisplayExecutor {
                 .is_some_and(|preset| preset.mode.uses_readings())
     }
 
+    /// Whether a frame may leave for the panel at `now`.
+    ///
+    /// Separate from [`Self::is_streaming`] because the two answer different
+    /// questions: that one is what the screen shows, and a stream inside its
+    /// retry wait is stopped as far as the operator is concerned, reason and
+    /// all. This one is what the tick asks, and it says yes once the wait has
+    /// run out, which is the only way a stopped stream ever starts again
+    /// without somebody activating a control.
+    fn stream_ready(&self, now: Instant) -> bool {
+        self.is_connected()
+            && self
+                .faulted
+                .as_ref()
+                .is_none_or(|fault| now >= fault.retry_at)
+    }
+
+    /// Stop the stream, and set when it may try again.
+    fn fault(&mut self, reason: String, now: Instant) {
+        let delay = match &self.faulted {
+            Some(fault) => (fault.delay * 2).min(MAX_RETRY_DELAY),
+            None => FIRST_RETRY_DELAY,
+        };
+        self.faulted = Some(Fault {
+            reason,
+            delay,
+            retry_at: now + delay,
+        });
+    }
+
     /// Per-panel state for [`kori_core::ipc::DaemonStatus`].
     pub fn state(&self) -> DisplayState {
         DisplayState {
             panel: self.panel.clone(),
             committed: self.committed().cloned(),
             streaming: self.is_streaming(),
-            faulted: self.faulted.clone(),
+            faulted: self.faulted.as_ref().map(|fault| fault.reason.clone()),
             dropped_frames: self.dropped,
         }
     }
@@ -258,7 +307,7 @@ impl DisplayExecutor {
     /// also what a faulted or disconnected panel reports: a stopped stream must
     /// not keep a clock running against a link that is refusing.
     pub fn advance_animation(&mut self, now: Instant) -> Option<Instant> {
-        if !self.is_streaming() {
+        if !self.stream_ready(now) {
             return None;
         }
         let animation = self.animation.as_mut()?;
@@ -291,9 +340,13 @@ impl DisplayExecutor {
 
         let outcome = self.send_bytes(&preset, bytes);
         if let HardwareState::Uncertain { reason } = &outcome.hardware {
-            self.faulted = Some(reason.clone());
+            self.fault(reason.clone(), now);
             return None;
         }
+        // A frame the panel took is what clears a fault, including the frame a
+        // retry just served. Nothing else does: the wait running out earns one
+        // attempt, not a recovery.
+        self.faulted = None;
         Some(due)
     }
 
@@ -301,26 +354,31 @@ impl DisplayExecutor {
     ///
     /// Returns `None` when there is nothing to do: no preset, no panel, a
     /// preset that does not read telemetry, an animation running on its own
-    /// clock, or a stream that has faulted.
-    pub fn refresh(&mut self, samples: &[MetricSample; 2]) -> Option<DisplayOutcome> {
-        // With no animation installed, [`Self::is_streaming`] is exactly "the
-        // active preset reads telemetry", so the preset is not asked the same
-        // question again below.
-        if !self.is_streaming() || self.animation.is_some() {
+    /// clock, or a stream that has faulted and is still inside its wait.
+    pub fn refresh(&mut self, now: Instant, samples: &[MetricSample; 2]) -> Option<DisplayOutcome> {
+        if self.animation.is_some() || !self.stream_ready(now) {
             return None;
         }
-        let preset = self.active.clone()?;
+        let preset = self
+            .active
+            .as_ref()
+            .filter(|preset| preset.mode.uses_readings())?
+            .clone();
         match self.send(&preset, samples) {
             Ok(outcome) => {
-                if let HardwareState::Uncertain { reason } = &outcome.hardware {
-                    self.faulted = Some(reason.clone());
+                match &outcome.hardware {
+                    HardwareState::Uncertain { reason } => self.fault(reason.clone(), now),
+                    // A frame the panel took is what clears a fault, including
+                    // the frame a retry just served. The wait running out earns
+                    // one attempt, not a recovery.
+                    _ => self.faulted = None,
                 }
                 Some(outcome)
             }
             // A preset that stopped rendering (an image the operator deleted,
             // say) stops the stream rather than failing every second.
             Err(error) => {
-                self.faulted = Some(error.to_string());
+                self.fault(error.to_string(), now);
                 None
             }
         }
@@ -675,10 +733,11 @@ mod tests {
         assert!(executor.state().streaming);
         assert_eq!(executor.state().faulted, None);
 
+        let start = Instant::now();
         bulk.fail_with(UsbfsError::PermissionDenied {
             path: "/dev/bus/usb/001/004".to_string(),
         });
-        executor.refresh(&samples(Some(60.0), Some(40.0)));
+        executor.refresh(start, &samples(Some(60.0), Some(40.0)));
 
         // The reason travels, not just the stopped flag. `streaming: false` is
         // equally what a panel nobody has written to reports, so a screen with
@@ -689,18 +748,78 @@ mod tests {
         let reason = state.faulted.expect("a stopped stream says why it stopped");
         assert!(reason.contains("udev"), "{reason}");
 
-        // Only an explicit apply clears it. Nothing about the preset changed
-        // when the transfer failed, so no automatic write has anything to
-        // notice, which is why the screen keeps one deliberate control.
+        // The next tick does not clear it, whatever the panel would now
+        // accept: a stream that retried every second would hammer an endpoint
+        // that has already refused.
         bulk.recover();
-        executor.refresh(&samples(Some(61.0), Some(40.0)));
+        let sent = pictures(&bulk);
+        executor.refresh(
+            start + Duration::from_secs(1),
+            &samples(Some(61.0), Some(40.0)),
+        );
         assert!(
             executor.state().faulted.is_some(),
             "a faulted stream must not restart itself on the next tick"
         );
+        assert_eq!(pictures(&bulk), sent, "nothing was sent inside the wait");
+
+        // An apply is still the way an operator clears it without waiting.
         executor
             .apply(&preset, &samples(Some(62.0), Some(40.0)))
             .unwrap();
+        assert_eq!(executor.state().faulted, None);
+        assert!(executor.state().streaming);
+    }
+
+    #[test]
+    fn a_stopped_stream_starts_itself_again_once_its_wait_has_run_out() {
+        // The panel froze on the last picture it took for as long as the
+        // window stayed closed, because the only way back was a control
+        // nobody was looking at. Measured on 2026-08-18: one hour and
+        // thirty-eight minutes of a stopped stream, with every reading behind
+        // it still current and nothing in the log to say so.
+        let (mut executor, bulk) = executor();
+        let preset = DisplayPreset::default_infographic();
+        let start = Instant::now();
+        executor
+            .apply(&preset, &samples(Some(50.0), Some(40.0)))
+            .unwrap();
+
+        bulk.fail_with(UsbfsError::PermissionDenied {
+            path: "/dev/bus/usb/001/004".to_string(),
+        });
+        executor.refresh(start, &samples(Some(60.0), Some(40.0)));
+        let sent = pictures(&bulk);
+
+        // Still refusing when the first wait runs out, so the wait doubles
+        // rather than the retry repeating at the old cadence.
+        executor.refresh(start + FIRST_RETRY_DELAY, &samples(Some(61.0), Some(40.0)));
+        assert_eq!(
+            pictures(&bulk),
+            sent,
+            "a refused frame completes no picture"
+        );
+        bulk.recover();
+        executor.refresh(
+            start + FIRST_RETRY_DELAY + Duration::from_secs(1),
+            &samples(Some(62.0), Some(40.0)),
+        );
+        assert!(
+            executor.state().faulted.is_some(),
+            "the second wait is longer than the first, not shorter"
+        );
+        assert_eq!(pictures(&bulk), sent, "nothing was sent inside the wait");
+
+        // And once that wait runs out, the panel is written again with no
+        // operator in the loop at all.
+        let outcome = executor
+            .refresh(
+                start + FIRST_RETRY_DELAY * 3 + Duration::from_secs(1),
+                &samples(Some(63.0), Some(40.0)),
+            )
+            .expect("the retry sends a frame");
+        assert_eq!(outcome.hardware, HardwareState::Confirmed);
+        assert_eq!(outcome.frames, 1);
         assert_eq!(executor.state().faulted, None);
         assert!(executor.state().streaming);
     }
@@ -932,7 +1051,10 @@ mod tests {
         executor.apply(&preset, &samples(None, None)).unwrap();
         let sent = pictures(&bulk);
 
-        assert_eq!(executor.refresh(&samples(Some(61.0), Some(48.0))), None);
+        assert_eq!(
+            executor.refresh(Instant::now(), &samples(Some(61.0), Some(48.0))),
+            None
+        );
         assert_eq!(pictures(&bulk), sent, "the telemetry tick sent nothing");
     }
 

@@ -154,7 +154,7 @@ impl Server {
                         for _ in 0..missed {
                             daemon.drop_display_frame();
                         }
-                        daemon.tick();
+                        daemon.tick(now);
                     }
                 }
 

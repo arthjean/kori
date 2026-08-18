@@ -665,7 +665,7 @@ impl Daemon {
     /// A tick that finds nothing to do costs one sample and one render and no
     /// transfer, because the executor compares the picture it produced against
     /// the one the panel already holds.
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, now: Instant) {
         let snapshot = self.sampler.snapshot();
         self.reconcile(&snapshot);
 
@@ -682,8 +682,14 @@ impl Daemon {
             return;
         };
         let samples = preset.samples(&snapshot);
-        if let Some(outcome) = self.display.refresh(&samples)
-            && outcome.frames > 0
+        // A frame that landed and a transfer that stopped the stream are both
+        // recorded. Only the first was, which left the event that matters most
+        // as the one thing the log could not carry: a stream stops with
+        // `frames: 0`, so the record of an hour of frozen panel was an hour of
+        // silence, and the reason lived only in a field a closed window was not
+        // reading.
+        if let Some(outcome) = self.display.refresh(now, &samples)
+            && (outcome.frames > 0 || !matches!(outcome.hardware, HardwareState::Confirmed))
         {
             self.diagnostics.record(
                 crate::now_unix_ms(),
