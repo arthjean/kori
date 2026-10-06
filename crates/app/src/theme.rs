@@ -198,6 +198,15 @@ pub mod color {
     pub const SERIES_FAN: Color = Color::rgb(0xd55181);
     /// A gridline: one step off the card, solid, recessive.
     pub const GRID: Color = Color::rgb(0x303030);
+    /// The overview dials' fill, from the foot of the sweep to the head of
+    /// what it has reached: the panel's own default band, so a dial on the
+    /// screen and the ring on the glass wear the same two colors.
+    ///
+    /// Under the 3:1 a mark is held to elsewhere in this file, and knowingly:
+    /// the foot measures 2.01:1 on [`PANEL`] and the head 3.45:1. A dial is
+    /// never read from its arc alone, since the value is written inside it.
+    pub const GAUGE_FOOT: Color = Color::rgb(0x6b00de);
+    pub const GAUGE_HEAD: Color = Color::rgb(0xd600bf);
 
     /// The translucent washes every row, menu item and nav entry is lit with.
     ///
@@ -568,6 +577,15 @@ mod tests {
         // Gridlines recede: visible, and nowhere near a mark.
         let grid = GRID.contrast(PANEL);
         assert!((1.05..1.5).contains(&grid), "grid is {grid:.2}:1");
+    }
+
+    #[test]
+    fn the_overview_dials_wear_the_panels_default_band() {
+        // Two spellings of one gradient: the panel's lives in the preset, the
+        // dial's here. Tied by a test so that changing one moves the other.
+        let band = kori_core::display::DisplayPreset::default_infographic().readings[0];
+        assert_eq!(Color::from(band.reading), GAUGE_FOOT);
+        assert_eq!(Color::from(band.band_end()), GAUGE_HEAD);
     }
 
     #[test]

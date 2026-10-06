@@ -6,7 +6,7 @@
 use std::f32::consts::PI;
 
 use gpui::{
-    Bounds, Div, Hsla, PathBuilder, Pixels, Point, SharedString, Window, canvas, div, point,
+    Bounds, Div, Hsla, PathBuilder, Pixels, Point, Rgba, SharedString, Window, canvas, div, point,
     prelude::*, px, size,
 };
 
@@ -26,12 +26,16 @@ const SWEEP: f32 = 1.5 * PI;
 /// in the middle.
 ///
 /// The track is the same arc in the subtle fill, so the share that is left
-/// reads as much as the share that is used. The fill takes the color its
-/// severity calls for; the caption under the value says the same thing in a
-/// word, so the state is never carried by color alone.
+/// reads as much as the share that is used. At rest the fill shades from the
+/// foot of the sweep to the head of what it reached, as the panel's ring does;
+/// a severity replaces it with the one color that state calls for, and the
+/// caption under the value says the same thing in a word, so the state is
+/// never carried by color alone.
 pub struct RadialGauge {
     fraction: Option<f32>,
-    fill: Hsla,
+    /// The fill's color at the start of the sweep and at the end of what it
+    /// reached. The same color twice is a solid fill.
+    fill: (Hsla, Hsla),
     value: SharedString,
     caption: SharedString,
     value_color: Hsla,
@@ -47,15 +51,16 @@ impl RadialGauge {
     ) -> Self {
         Self {
             fraction: fraction.map(|fraction| fraction.clamp(0.0, 1.0)),
-            fill: color::ACCENT.hsla(),
+            fill: (color::GAUGE_FOOT.hsla(), color::GAUGE_HEAD.hsla()),
             value: value.into(),
             caption: caption.into(),
             value_color: color::TEXT.hsla(),
         }
     }
 
+    /// Fill solid in `fill`, in place of the resting gradient.
     pub fn fill(mut self, fill: Hsla) -> Self {
-        self.fill = fill;
+        self.fill = (fill, fill);
         self
     }
 
@@ -126,24 +131,58 @@ fn arc_point(center: Point<Pixels>, radius: Pixels, share: f32) -> Point<Pixels>
     )
 }
 
-fn stroke_arc(window: &mut Window, center: Point<Pixels>, radius: Pixels, to: f32, color: Hsla) {
+/// `foot` and `head` mixed at `at`, from 0 to 1, in RGB as the panel mixes
+/// them.
+fn shade(foot: Hsla, head: Hsla, at: f32) -> Hsla {
+    let (foot, head) = (foot.to_rgb(), head.to_rgb());
+    let mix = |from: f32, to: f32| from + (to - from) * at;
+    Rgba {
+        r: mix(foot.r, head.r),
+        g: mix(foot.g, head.g),
+        b: mix(foot.b, head.b),
+        a: mix(foot.a, head.a),
+    }
+    .into()
+}
+
+fn stroke_arc(
+    window: &mut Window,
+    center: Point<Pixels>,
+    radius: Pixels,
+    to: f32,
+    (foot, head): (Hsla, Hsla),
+) {
     // Three degrees a segment: smooth at this size, and still a few dozen
     // vertices for a whole dial.
     let segments = ((SWEEP * to) / (3.0f32.to_radians())).ceil().max(1.0) as usize;
-    let mut builder = PathBuilder::stroke(RING);
-    for step in 0..=segments {
-        let at = arc_point(center, radius, to * step as f32 / segments as f32);
-        if step == 0 {
-            builder.move_to(at);
-        } else {
-            builder.line_to(at);
+    let at_step = |step: usize| arc_point(center, radius, to * step as f32 / segments as f32);
+    let stroke = |window: &mut Window, steps: std::ops::RangeInclusive<usize>, color: Hsla| {
+        let mut builder = PathBuilder::stroke(RING);
+        for step in steps.clone() {
+            if step == *steps.start() {
+                builder.move_to(at_step(step));
+            } else {
+                builder.line_to(at_step(step));
+            }
+        }
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, color);
+        }
+    };
+    if foot == head {
+        stroke(window, 0..=segments, foot);
+    } else {
+        // One path per segment, each in its own step of the shade. Every one
+        // runs a segment past its end so its neighbor overlaps it: two
+        // antialiased edges laid end to end leave a hairline between them.
+        for step in 0..segments {
+            let color = shade(foot, head, (step as f32 + 0.5) / segments as f32);
+            stroke(window, step..=(step + 2).min(segments), color);
         }
     }
-    if let Ok(path) = builder.build() {
-        window.paint_path(path, color);
-    }
-    // Round ends, painted rather than asked of the stroker.
-    for share in [0.0, to] {
+    // Round ends, painted rather than asked of the stroker, each in the color
+    // of the end it closes.
+    for (share, color) in [(0.0, foot), (to, head)] {
         let at = arc_point(center, radius, share);
         let cap = RING / 2.0;
         window.paint_quad(
@@ -156,7 +195,12 @@ fn stroke_arc(window: &mut Window, center: Point<Pixels>, radius: Pixels, to: f3
     }
 }
 
-fn paint_gauge(window: &mut Window, bounds: Bounds<Pixels>, fraction: Option<f32>, fill: Hsla) {
+fn paint_gauge(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    fraction: Option<f32>,
+    fill: (Hsla, Hsla),
+) {
     let side = bounds.size.width.min(bounds.size.height);
     let center = point(
         bounds.origin.x + bounds.size.width / 2.0,
@@ -166,7 +210,8 @@ fn paint_gauge(window: &mut Window, bounds: Bounds<Pixels>, fraction: Option<f32
     if radius <= px(0.0) {
         return;
     }
-    stroke_arc(window, center, radius, 1.0, color::CONTROL_HOVER.hsla());
+    let track = color::CONTROL_HOVER.hsla();
+    stroke_arc(window, center, radius, 1.0, (track, track));
     if let Some(fraction) = fraction.filter(|fraction| *fraction > 0.0) {
         stroke_arc(window, center, radius, fraction, fill);
     }
@@ -191,6 +236,30 @@ mod tests {
         assert!(middle.y < px(-9.9));
         // Past either end the dial holds at its end rather than wrapping.
         assert_eq!(arc_point(center, radius, 2.0), end);
+    }
+
+    #[test]
+    fn the_shade_runs_from_the_foot_to_the_head_and_no_further() {
+        let (foot, head) = (color::GAUGE_FOOT.hsla(), color::GAUGE_HEAD.hsla());
+        let close = |a: Hsla, b: Hsla| {
+            let (a, b) = (a.to_rgb(), b.to_rgb());
+            (a.r - b.r).abs() + (a.g - b.g).abs() + (a.b - b.b).abs() < 0.01
+        };
+        assert!(close(shade(foot, head, 0.0), foot));
+        assert!(close(shade(foot, head, 1.0), head));
+        // Halfway is a mix of the two, not a third hue.
+        let middle = shade(foot, head, 0.5).to_rgb();
+        let (foot, head) = (foot.to_rgb(), head.to_rgb());
+        assert!((middle.r - (foot.r + head.r) / 2.0).abs() < 0.01);
+        assert!((middle.b - (foot.b + head.b) / 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_severity_fills_solid_and_the_resting_dial_shades() {
+        let resting = RadialGauge::new(Some(0.5), "", "");
+        assert_ne!(resting.fill.0, resting.fill.1);
+        let warm = RadialGauge::new(Some(0.5), "", "").fill(color::WARNING.hsla());
+        assert_eq!(warm.fill, (color::WARNING.hsla(), color::WARNING.hsla()));
     }
 
     #[test]
