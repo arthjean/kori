@@ -26,10 +26,18 @@ use gpui::{Div, Image, ImageFormat, Pixels, div, img, prelude::*, px};
 
 use crate::theme::{Color, color};
 
-/// Side of the preview, in logical pixels.
+/// Widest the disc is ever drawn, in logical pixels.
 ///
-/// The frame is rendered at the panel's own 240 and scaled here, so nothing is
-/// laid out against this number.
+/// A ceiling rather than the size on screen. The frame is drawn at its own
+/// resolution, one frame pixel to one logical pixel, so a panel smaller than
+/// this shows a smaller disc rather than a scaled one, and nothing is laid out
+/// against either number: [`crate::shell::screen::panel::PREVIEW_COLUMN_WIDTH`]
+/// holds the column the disc sits in.
+///
+/// Scaling was what made the contour bleed. A 240 pixel frame stretched to 252
+/// is resampled at 1.05, which lands a hard edge between two neighbors and
+/// smears the ring into them, and the band runs within four pixels of the rim
+/// where that smear has nothing to hide behind.
 pub const PREVIEW_SIDE: Pixels = px(252.0);
 
 /// The disc, around whatever frame is current.
@@ -41,29 +49,69 @@ pub const PREVIEW_SIDE: Pixels = px(252.0);
 /// fabricate a default to fill a gap. Nothing is lost by refusing: every control
 /// on the row is disabled in that state and the line above the disc already says
 /// no panel has answered.
-pub fn panel_frame(rendered: Option<Vec<u8>>, background: kori_core::lighting::Rgb) -> Div {
-    div().flex().flex_col().items_center().child(
-        // Round, always: the screen is square but the window in the cooler
-        // is not, and the corners of the framebuffer are behind the housing
-        // rather than on the glass. Showing them would be showing pixels
-        // the operator cannot see. The disc is the preview, with nothing
-        // behind it: a square plate under a round window read as a picture
-        // file sitting on the work surface.
-        div()
-            .w(PREVIEW_SIDE)
-            .h(PREVIEW_SIDE)
-            .rounded(PREVIEW_SIDE / 2.0)
-            .overflow_hidden()
-            .bg(Color::from(background).hsla())
-            .border_1()
-            .border_color(color::SEPARATOR.hsla())
-            .children(rendered.map(|png| {
+///
+/// `frame_side` is the side of the picture being drawn, in frame pixels, and it
+/// arrives from the picture rather than from the panel the row reports so the
+/// disc is the size of the image it holds.
+pub fn panel_frame(
+    rendered: Option<Vec<u8>>,
+    frame_side: Option<u16>,
+    background: kori_core::lighting::Rgb,
+) -> Div {
+    let side = disc_side(frame_side);
+    // Round, always: the screen is square but the window in the cooler is not,
+    // and the corners of the framebuffer are behind the housing rather than on
+    // the glass. Showing them would be showing pixels the operator cannot see.
+    // The disc is the preview, with nothing behind it: a square plate under a
+    // round window read as a picture file sitting on the work surface.
+    let disc = div()
+        .flex_none()
+        .w(side)
+        .h(side)
+        .rounded(side / 2.0)
+        .bg(Color::from(background).hsla());
+
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .child(match rendered {
+            // One rim, drawn once. The frame fills the disc exactly, so the image
+            // carries the whole contour and the toolkit antialiases that one curve.
+            // The border is left off under a picture on purpose: it is a box the
+            // image would be laid out inside, two logical pixels narrower than the
+            // disc, and a frame shrunk into it lands its own rim a pixel short of
+            // the one behind it. That pair of rims a pixel apart is the bleed this
+            // screen showed, not the antialiasing.
+            Some(png) => disc.child(
                 img(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
-                    .w(PREVIEW_SIDE)
-                    .h(PREVIEW_SIDE)
-                    .rounded(PREVIEW_SIDE / 2.0)
-            })),
-    )
+                    // Never shrunk to fit. The disc is exactly this wide, so there
+                    // is nothing to shrink for, and a squeezed frame is an oval
+                    // ring resampled unevenly on one axis.
+                    .flex_none()
+                    .w(side)
+                    .h(side)
+                    .rounded(side / 2.0),
+            ),
+            // Nothing to draw, so the rim is all there is: without it an empty disc
+            // on a preset whose background matches the surface behind it is not
+            // there at all.
+            None => disc.border_1().border_color(color::SEPARATOR.hsla()),
+        })
+}
+
+/// The side the disc is drawn at, for a picture `frame_side` pixels across.
+///
+/// One frame pixel to one logical pixel up to [`PREVIEW_SIDE`], which is the
+/// whole point: at that ratio the ring the renderer antialiased is the ring on
+/// screen. A panel wider than the column is scaled down to fit, because a disc
+/// that overflowed the column would push the fields beside it off the row.
+fn disc_side(frame_side: Option<u16>) -> Pixels {
+    match frame_side {
+        Some(frame) if frame > 0 => px(f32::from(frame).min(f32::from(PREVIEW_SIDE))),
+        // No picture, so no size to state.
+        _ => PREVIEW_SIDE,
+    }
 }
 
 #[cfg(test)]
@@ -243,6 +291,20 @@ mod tests {
         let (label, _, minimum) = worst_contrast(&preset).unwrap();
         assert_eq!(label, "Text 1");
         assert_eq!(minimum, MIN_SMALL_TEXT_CONTRAST);
+    }
+
+    #[test]
+    fn the_disc_is_the_side_of_the_frame_it_holds_and_never_wider_than_its_ceiling() {
+        // One frame pixel to one logical pixel is what keeps the ring the
+        // renderer antialiased from being resampled into the pixels beside it,
+        // so the panel this product drives draws a 240 disc and not a 252 one.
+        assert_eq!(disc_side(Some(panel().width)), px(240.0));
+        // A panel wider than the column is scaled down: overflowing it would
+        // push the fields beside the disc off the row.
+        assert_eq!(disc_side(Some(480)), PREVIEW_SIDE);
+        // No picture, so no size to state.
+        assert_eq!(disc_side(None), PREVIEW_SIDE);
+        assert_eq!(disc_side(Some(0)), PREVIEW_SIDE);
     }
 
     #[test]

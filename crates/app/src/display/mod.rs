@@ -328,6 +328,15 @@ impl DisplayScreen {
         self.picture.png()
     }
 
+    /// The side, in frame pixels, of the picture the preview should draw.
+    ///
+    /// `None` when there is no picture, which is also when there is no size to
+    /// state: the disc falls back to its own ceiling rather than to a panel
+    /// geometry nothing has answered.
+    pub fn picture_side(&self) -> Option<u16> {
+        self.picture.side()
+    }
+
     /// Why there is none, when a picture was attempted and failed.
     pub fn picture_error(&self) -> Option<&DisplayError> {
         self.picture_error.as_ref()

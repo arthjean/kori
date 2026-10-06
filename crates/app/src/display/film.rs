@@ -56,6 +56,14 @@ enum Source {
 }
 
 impl Identity {
+    /// The side of the square the frame this key describes fits in.
+    ///
+    /// The smaller of the panel's two sides, which is also what the renderer
+    /// bounds the dial by, and what a quarter turn leaves unchanged.
+    fn side(&self) -> u16 {
+        self.panel.0.min(self.panel.1)
+    }
+
     /// Key the picture `preset` would produce on this panel, at these readings.
     ///
     /// `telemetry` is `None` before the first sample lands, which is drawn as
@@ -178,6 +186,16 @@ impl Picture {
             Self::Still { png, .. } => Some(png),
             Self::Film(film) => film.frame(),
         }
+    }
+
+    /// The side, in frame pixels, of the picture the preview would draw.
+    ///
+    /// Taken from the key the picture was built under rather than from the panel
+    /// the row currently reports, so the disc is the size of the image it is
+    /// showing and not of a panel that answered a different geometry after it
+    /// was compiled.
+    pub(super) fn side(&self) -> Option<u16> {
+        self.identity().map(Identity::side)
     }
 
     pub(super) fn film(&self) -> Option<&ImageFilm> {

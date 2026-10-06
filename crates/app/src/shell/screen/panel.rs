@@ -148,6 +148,9 @@ impl Shell {
         // renders against.
         let film = self.lcd.film();
         let picture = self.lcd.picture().map(<[u8]>::to_vec);
+        // The side of that picture, so the disc is drawn at the frame's own
+        // resolution instead of scaled to a fixed one.
+        let picture_side = self.lcd.picture_side();
 
         // One grid, two columns wide: slot 1 on the left, slot 2 on the right,
         // one line per thing being chosen. Built here rather than inside the
@@ -273,6 +276,7 @@ impl Shell {
                     .w(PREVIEW_COLUMN_WIDTH)
                     .child(crate::preview::panel_frame(
                         picture,
+                        picture_side,
                         self.lcd.preview().background,
                     )),
             )
