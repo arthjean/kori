@@ -39,7 +39,7 @@ precedence = "closest"
 SPDX-FileCopyrightText = "2020-2026 Paweł Kuna"
 SPDX-License-Identifier = "MIT"
 
-# The panel's typeface is Noto Sans SemiBold 2.015, cut down to 98 glyphs with
+# The panel's typeface is Noto Sans ExtraBold 2.015, cut down to 98 glyphs with
 # `pyftsubset` so that ten kilobytes ship instead of six hundred. Subsetting
 # makes it a Modified Version under OFL 1.1 section 2; the family carries no
 # Reserved Font Name (its copyright line is "Copyright 2022 The Noto Project
@@ -52,8 +52,8 @@ SPDX-License-Identifier = "MIT"
 # and the font is aggregated with this program rather than derived from it.
 #
 # Rebuilt with:
-#   pyftsubset NotoSans-SemiBold.ttf \
-#     --output-file=crates/lcd-renderer/assets/NotoSans-SemiBold-subset.ttf \
+#   pyftsubset NotoSans-ExtraBold.ttf \
+#     --output-file=crates/lcd-renderer/assets/NotoSans-ExtraBold-subset.ttf \
 #     --unicodes="U+0020-007E,U+00B0,U+00B7" --layout-features='' \
 #     --no-hinting --desubroutinize --drop-tables+=DSIG --name-IDs='*' \
 #     --notdef-outline

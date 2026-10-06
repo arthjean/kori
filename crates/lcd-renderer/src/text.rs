@@ -8,12 +8,17 @@
 //! is therefore rasterized here, which means the choice of face is entirely
 //! ours and there is no reason for it to be anything but a proper one.
 //!
-//! The face is a subset of Noto Sans SemiBold, 98 glyphs of the 3000 the family
+//! The face is a subset of Noto Sans ExtraBold, 98 glyphs of the 3000 the family
 //! carries, cut with `pyftsubset` to the printable ASCII range plus the degree
 //! sign and the middle dot. Ten kilobytes, embedded rather than looked up
 //! through fontconfig: the daemon and the client have to rasterize the same
 //! pixels from the same description, and a face resolved from the system would
 //! make that depend on what happens to be installed.
+//!
+//! ExtraBold because the panel is read at a glance from across a desk, through
+//! a glass and at whatever brightness the operator chose: a heavy numeral holds
+//! its shape there where a semibold one thins out, and the caption under it is
+//! set small enough that the weight never crowds it.
 //!
 //! Sizes here are cap heights, not em sizes. A layout on a 240 pixel panel is
 //! reasoned about in terms of how tall the digits look, and the em box is
@@ -27,7 +32,7 @@ use kori_core::lighting::Rgb;
 use crate::canvas::Canvas;
 
 /// The subset that ships with the binary.
-const PANEL_FACE: &[u8] = include_bytes!("../assets/NotoSans-SemiBold-subset.ttf");
+const PANEL_FACE: &[u8] = include_bytes!("../assets/NotoSans-ExtraBold-subset.ttf");
 
 /// Height of a capital, as a fraction of the scale `ab_glyph` is given.
 ///

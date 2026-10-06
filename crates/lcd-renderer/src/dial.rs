@@ -5,9 +5,9 @@
 //! the whole ring.
 //!
 //! Both are built from the same three elements, a band, a value and a caption,
-//! so a change to how a reading is set reaches both layouts at once. Nothing
-//! here opens a file or knows the panel's byte format; it takes a canvas and
-//! puts marks on it.
+//! so a change to how a reading is set reaches both layouts at once. The pair
+//! adds a fourth, the rule between its columns. Nothing here opens a file or
+//! knows the panel's byte format; it takes a canvas and puts marks on it.
 
 use kori_core::display::{DisplayPreset, LcdMetric, MetricSample, ReadingSlot};
 use kori_core::lighting::Rgb;
@@ -26,9 +26,9 @@ use crate::text;
 pub(crate) mod layout {
     /// Outer and inner radius of the gauge bands.
     pub const TRACK_OUTER: f32 = 0.965;
-    pub const TRACK_INNER: f32 = 0.845;
+    pub const TRACK_INNER: f32 = 0.800;
     /// Thinner band an unavailable reading falls back to.
-    pub const TRACK_UNAVAILABLE_INNER: f32 = 0.905;
+    pub const TRACK_UNAVAILABLE_INNER: f32 = 0.880;
 
     /// Where a side band begins, and how far it runs.
     ///
@@ -51,23 +51,45 @@ pub(crate) mod layout {
     /// the other on the same axis and read as one four-digit number; side by
     /// side, each is a column with its own caption and its own band beside it,
     /// and the pairing is legible without reading a word.
-    pub const PAIR_OFFSET: f32 = 0.205;
-    pub const VALUE_TOP: f32 = 0.383;
-    pub const VALUE_HEIGHT: f32 = 0.128;
-    pub const CAPTION_TOP: f32 = 0.550;
+    pub const PAIR_OFFSET: f32 = 0.218;
+    /// The largest a paired value is ever set, before the fit may shrink it.
+    pub const VALUE_HEIGHT: f32 = 0.165;
+    /// How far right of its column a paired reading may reach: up to the rule
+    /// between the columns, less the clearance that keeps a percent sign off
+    /// it.
+    pub const PAIR_VALUE_REACH: f32 = 0.192;
+    /// The line both paired values sit on.
+    ///
+    /// A baseline rather than a top, in both layouts. A value the fit has set
+    /// smaller then keeps its distance to the caption under it, instead of
+    /// floating up away from it by however much the unit cost.
+    pub const VALUE_BASELINE: f32 = 0.532;
+    pub const CAPTION_TOP: f32 = 0.578;
+    /// Cap height of a caption in the two-reading layout.
+    ///
+    /// A third of the value or less. The number is what the panel is read for,
+    /// and a caption close to its size competes with it for the first glance.
+    pub const CAPTION_HEIGHT: f32 = 0.050;
+
+    /// The rule between the two columns: how wide, and how much of the text
+    /// color it keeps.
+    ///
+    /// Dim enough to separate the columns without becoming a third reading.
+    pub const DIVIDER_WIDTH: f32 = 0.008;
+    pub const DIVIDER_REST: f32 = 0.300;
 
     /// The one-reading layout: the value and its metric, centered in the ring.
-    pub const SINGLE_VALUE_TOP: f32 = 0.320;
+    pub const SINGLE_VALUE_BASELINE: f32 = 0.575;
     /// The largest the value is ever set, before the fit may shrink it.
-    pub const SINGLE_VALUE_HEIGHT: f32 = 0.235;
+    pub const SINGLE_VALUE_HEIGHT: f32 = 0.260;
     /// Widest a line may be before it would meet the ring.
     ///
     /// Held inside the ring's own opening rather than against it: the value is
     /// the tallest line on the glass, so its corners come closest to the band
     /// even where its middle would clear it.
     pub const SINGLE_VALUE_WIDTH: f32 = 0.750;
-    pub const SINGLE_CAPTION_TOP: f32 = 0.615;
-    pub const SINGLE_CAPTION_HEIGHT: f32 = 0.072;
+    pub const SINGLE_CAPTION_TOP: f32 = 0.628;
+    pub const SINGLE_CAPTION_HEIGHT: f32 = 0.062;
 
     /// How the unit is set against the value it belongs to.
     ///
@@ -77,17 +99,25 @@ pub(crate) mod layout {
     /// digits and the unit hangs off the right of them: a number that shifted
     /// sideways because its unit was wide would be a number that moves when the
     /// metric changes.
-    pub const UNIT_SCALE: f32 = 0.450;
-    pub const UNIT_GAP: f32 = 0.060;
-
-    /// Cap height of a caption in the two-reading layout.
-    pub const CAPTION_HEIGHT: f32 = 0.067;
+    ///
+    /// Two scales, because the two marks are not the same kind of glyph. A
+    /// degree sign is a small ring the face sets high and light, and at the
+    /// percent sign's scale it shrinks to a dot; a percent sign is a full-height
+    /// glyph that would outweigh the digits at the degree sign's.
+    pub const DEGREE_SCALE: f32 = 0.720;
+    pub const PERCENT_SCALE: f32 = 0.480;
+    pub const UNIT_GAP: f32 = 0.050;
 
     /// How much of the reading's own color the empty part of its track keeps.
     ///
     /// Enough to say where the band will grow, far enough below the reading
     /// itself that a full gauge and an empty one are never confused.
     pub const TRACK_REST: f32 = 0.130;
+    /// How much of the text color an unavailable reading's band keeps.
+    ///
+    /// Present enough to show the gauge exists, quiet enough that a missing
+    /// collector does not outshine the reading still being drawn beside it.
+    pub const UNAVAILABLE_REST: f32 = 0.200;
 }
 
 /// The square the layout is drawn in: the largest one the panel contains,
@@ -146,13 +176,14 @@ impl Frame {
     }
 }
 
-/// Draw both gauges, both readings and both captions.
+/// Draw both gauges, both readings, both captions and the rule between them.
 pub(crate) fn infographic(
     canvas: &mut Canvas,
     preset: &DisplayPreset,
     samples: &[MetricSample; 2],
 ) {
     let frame = Frame::of(canvas.width() as f32, canvas.height() as f32);
+    let value_height = pair_value_height(frame);
 
     for (index, sample) in samples.iter().enumerate() {
         let mirrored = index == 1;
@@ -169,8 +200,8 @@ pub(crate) fn infographic(
             sample,
             slot.text,
             column,
-            frame.top(layout::VALUE_TOP),
-            frame.length(layout::VALUE_HEIGHT),
+            frame.top(layout::VALUE_BASELINE),
+            value_height,
         );
         caption(
             canvas,
@@ -181,6 +212,27 @@ pub(crate) fn infographic(
             frame.length(layout::CAPTION_HEIGHT),
         );
     }
+
+    // From the top of the values to the foot of the captions, so the rule
+    // spans exactly the block it divides. Its color is the two text
+    // colors met halfway and dimmed: it belongs to neither column.
+    let middle = frame.column(0.0);
+    let width = frame.length(layout::DIVIDER_WIDTH);
+    canvas.fill_stroke(
+        (
+            middle,
+            frame.top(layout::VALUE_BASELINE) - value_height + width / 2.0,
+        ),
+        (
+            middle,
+            frame.top(layout::CAPTION_TOP + layout::CAPTION_HEIGHT) - width / 2.0,
+        ),
+        width,
+        preset.background.mixed(
+            preset.readings[0].text.mixed(preset.readings[1].text, 0.5),
+            layout::DIVIDER_REST,
+        ),
+    );
 }
 
 /// Draw one metric as the panel's whole subject.
@@ -198,7 +250,7 @@ pub(crate) fn single(canvas: &mut Canvas, preset: &DisplayPreset, sample: &Metri
         sample,
         slot.text,
         center_x,
-        frame.top(layout::SINGLE_VALUE_TOP),
+        frame.top(layout::SINGLE_VALUE_BASELINE),
         single_value_height(sample.metric, frame),
     );
     caption(
@@ -221,13 +273,39 @@ pub(crate) fn single(canvas: &mut Canvas, preset: &DisplayPreset, sample: &Metri
 /// sign is the wider mark.
 fn single_value_height(metric: LcdMetric, frame: Frame) -> f32 {
     // Half the room, because the reading is centered and it is the right half
-    // that has to hold both the digits and the unit. Width is linear in the cap
-    // height, so one measurement gives the ratio.
-    let half_room = frame.length(layout::SINGLE_VALUE_WIDTH) / 2.0;
-    let reach = reading_reach(metric).max(f32::EPSILON);
-    frame
-        .length(layout::SINGLE_VALUE_HEIGHT)
-        .min(half_room / reach)
+    // that has to hold both the digits and the unit.
+    fitted(
+        metric,
+        frame.length(layout::SINGLE_VALUE_HEIGHT),
+        frame.length(layout::SINGLE_VALUE_WIDTH) / 2.0,
+    )
+}
+
+/// How tall the paired layout sets both of its values.
+///
+/// One size for the pair, fitted to the widest reading any metric can produce.
+/// Two columns at two sizes read as a primary and a secondary, which the pair
+/// is not; and a size that followed the metrics would move both numbers every
+/// time either slot was repointed.
+fn pair_value_height(frame: Frame) -> f32 {
+    LcdMetric::ALL
+        .iter()
+        .map(|metric| {
+            fitted(
+                *metric,
+                frame.length(layout::VALUE_HEIGHT),
+                frame.length(layout::PAIR_VALUE_REACH),
+            )
+        })
+        .fold(frame.length(layout::VALUE_HEIGHT), f32::min)
+}
+
+/// The cap height at which `metric`'s widest reading reaches `room` right of
+/// its center, never above `largest`.
+///
+/// Width is linear in the cap height, so one measurement gives the ratio.
+fn fitted(metric: LcdMetric, largest: f32, room: f32) -> f32 {
+    largest.min(room / reading_reach(metric).max(f32::EPSILON))
 }
 
 /// How far right of the value's center its unit reaches, per unit of cap
@@ -245,7 +323,17 @@ fn reading_reach(metric: LcdMetric) -> f32 {
     };
     text::width(&widest.text(), 1.0) / 2.0
         + layout::UNIT_GAP
-        + text::width(metric.unit(), layout::UNIT_SCALE)
+        + text::width(metric.unit(), unit_scale(metric))
+}
+
+/// How large `metric`'s unit is set, as a fraction of the value's cap height.
+fn unit_scale(metric: LcdMetric) -> f32 {
+    match metric {
+        LcdMetric::CpuLoad | LcdMetric::GpuLoad => layout::PERCENT_SCALE,
+        LcdMetric::CpuTemperature | LcdMetric::GpuTemperature | LcdMetric::LiquidTemperature => {
+            layout::DEGREE_SCALE
+        }
+    }
 }
 
 /// Where one band sits on the dial: geometry only, no color.
@@ -321,7 +409,7 @@ fn gauge(
                 sweep_turns: band.sweep,
                 round_caps: true,
             },
-            preset.background.mixed(slot.text, 0.28),
+            preset.background.mixed(slot.text, layout::UNAVAILABLE_REST),
         );
         return;
     };
@@ -372,29 +460,36 @@ fn gauge(
     );
 }
 
-/// A reading centered on `center_x`, with its unit hung off the right.
+/// A reading centered on `center_x` and sitting on `baseline`, with its unit
+/// hung off the right.
 ///
 /// The digits alone decide the centering. The unit is set smaller and aligned
 /// on the cap line, so it reads as a mark on the number rather than as a
 /// character of it, and a metric in percent does not push its value off center.
+/// An unavailable reading carries no unit: the dashes say there is no value,
+/// and a degree sign after them would claim there was one.
 fn reading(
     canvas: &mut Canvas,
     sample: &MetricSample,
     color: Rgb,
     center_x: f32,
-    top: f32,
+    baseline: f32,
     cap_height: f32,
 ) {
+    let top = baseline - cap_height;
     let value = sample.text();
     let value_width = text::width(&value, cap_height);
     let left = center_x - value_width / 2.0;
     text::draw(canvas, &value, left, top, cap_height, color);
+    if sample.value.is_none() {
+        return;
+    }
     text::draw(
         canvas,
         sample.metric.unit(),
         left + value_width + cap_height * layout::UNIT_GAP,
         top,
-        cap_height * layout::UNIT_SCALE,
+        cap_height * unit_scale(sample.metric),
         color,
     );
 }
@@ -698,8 +793,8 @@ mod tests {
             // Only the rows and the column the first reading occupies, so the
             // caption under it and the reading beside it are not measured with
             // it.
-            let rows = ((layout::VALUE_TOP * SIDE as f32) as u32 + 2)
-                ..((layout::VALUE_TOP + layout::VALUE_HEIGHT) * SIDE as f32) as u32;
+            let rows = (((layout::VALUE_BASELINE - layout::VALUE_HEIGHT) * SIDE as f32) as u32 + 2)
+                ..(layout::VALUE_BASELINE * SIDE as f32) as u32;
             let lit: Vec<u32> = scan(&frame)
                 .filter(|(x, y, _, pixel)| {
                     rows.contains(y) && *x < SIDE / 2 && *pixel == preset.readings[0].text
@@ -949,12 +1044,109 @@ mod tests {
         // Above the value, where the single layout put the name.
         empty_between(
             &single,
-            24..(SIDE as f32 * layout::SINGLE_VALUE_TOP) as u32 - 2,
+            24..(SIDE as f32 * (layout::SINGLE_VALUE_BASELINE - layout::SINGLE_VALUE_HEIGHT))
+                as u32
+                - 2,
         );
 
         preset.mode = DisplayMode::DualInfographic;
         let paired = render(&preset, &samples(Some(50.0), Some(50.0)), &panel()).unwrap();
         // Above the pair of readings, where the paired layout put it.
-        empty_between(&paired, 24..(SIDE as f32 * layout::VALUE_TOP) as u32 - 2);
+        empty_between(
+            &paired,
+            24..(SIDE as f32 * (layout::VALUE_BASELINE - layout::VALUE_HEIGHT)) as u32 - 2,
+        );
+    }
+
+    #[test]
+    fn a_full_load_stays_on_its_own_side_of_the_rule() {
+        // The widest reading any metric produces is a load at full scale, and
+        // its percent sign hangs off the right of the digits. Set at a fixed
+        // size, it ran past the middle of the panel into the other column.
+        let mut preset = DisplayPreset::default_infographic();
+        preset.background = Rgb::BLACK;
+        preset.readings[0].metric = LcdMetric::CpuLoad;
+        preset.readings[0].text = Rgb::new(0x00, 0xff, 0x00);
+        let frame = render(
+            &preset,
+            &[
+                MetricSample {
+                    metric: LcdMetric::CpuLoad,
+                    value: Some(100.0),
+                },
+                MetricSample::unavailable(LcdMetric::GpuTemperature),
+            ],
+            &panel(),
+        )
+        .unwrap();
+
+        let rule = SIDE as f32 / 2.0 - SIDE as f32 * layout::DIVIDER_WIDTH;
+        let furthest = scan(&frame)
+            .filter(|(_, _, _, pixel)| *pixel == preset.readings[0].text)
+            .map(|(x, _, _, _)| x)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            (furthest as f32) < rule,
+            "the first column's ink reaches column {furthest}, past the rule at {rule}"
+        );
+    }
+
+    #[test]
+    fn the_pair_is_divided_by_a_rule_that_belongs_to_neither_column() {
+        let mut preset = DisplayPreset::default_infographic();
+        preset.background = Rgb::BLACK;
+        let frame = render(&preset, &samples(Some(50.0), Some(50.0)), &panel()).unwrap();
+        let middle = SIDE / 2;
+        // Down the middle of the panel, where neither column puts ink: every
+        // mark there is the rule, which is dimmer than either text color.
+        let ruled: Vec<(u32, Rgb)> = scan(&frame)
+            .filter(|(x, _, distance, pixel)| {
+                x.abs_diff(middle) <= 1
+                    && *distance < RADIUS * layout::TRACK_INNER
+                    && *pixel != preset.background
+            })
+            .map(|(_, y, _, pixel)| (y, pixel))
+            .collect();
+        assert!(!ruled.is_empty(), "no rule between the columns");
+        for (y, pixel) in &ruled {
+            for slot in &preset.readings {
+                assert!(
+                    pixel.g < slot.text.g,
+                    "row {y} of the rule is as bright as a reading"
+                );
+            }
+        }
+        // It spans the block of readings and captions, and nothing above or
+        // below it.
+        let side = SIDE as f32;
+        let top = ruled.iter().map(|(y, _)| *y).min().unwrap_or(0) as f32;
+        let bottom = ruled.iter().map(|(y, _)| *y).max().unwrap_or(0) as f32;
+        assert!(top >= side * (layout::VALUE_BASELINE - layout::VALUE_HEIGHT) - 1.0);
+        assert!(bottom <= side * (layout::CAPTION_TOP + layout::CAPTION_HEIGHT) + 1.0);
+    }
+
+    #[test]
+    fn an_unavailable_reading_carries_no_unit() {
+        // The dashes say there is no value. A degree sign after them would
+        // claim there was one, in the one place the operator looks to check.
+        let mut preset = DisplayPreset::default_infographic();
+        preset.mode = DisplayMode::SingleReading;
+        preset.background = Rgb::BLACK;
+        let frame = render(&preset, &samples(None, None), &panel()).unwrap();
+
+        let square = Frame::of(SIDE as f32, SIDE as f32);
+        let height = single_value_height(LcdMetric::CpuTemperature, square);
+        let dashes = text::width("--", height);
+        let baseline = SIDE as f32 * layout::SINGLE_VALUE_BASELINE;
+        let furthest = scan(&frame)
+            .filter(|(_, y, _, pixel)| (*y as f32) < baseline && *pixel == preset.readings[0].text)
+            .map(|(x, _, _, _)| x)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            (furthest as f32) <= SIDE as f32 / 2.0 + dashes / 2.0 + 1.0,
+            "something was drawn right of the dashes, at column {furthest}"
+        );
     }
 }

@@ -177,6 +177,39 @@ impl Canvas {
         }
     }
 
+    /// Fill a straight stroke from `start` to `end`, `width` across, with round
+    /// ends.
+    ///
+    /// Coverage is the distance to the segment, with the same one pixel of
+    /// softness as the arcs, so a rule drawn beside a band is edged like it.
+    pub fn fill_stroke(&mut self, start: (f32, f32), end: (f32, f32), width: f32, color: Rgb) {
+        let half = width / 2.0;
+        if half <= 0.0 {
+            return;
+        }
+        let (run_x, run_y) = (end.0 - start.0, end.1 - start.1);
+        let length_squared = run_x * run_x + run_y * run_y;
+        let edge = half + 0.5;
+        let rows = (start.1.min(end.1) - edge).floor() as i32..=(start.1.max(end.1) + edge) as i32;
+        let columns =
+            (start.0.min(end.0) - edge).floor() as i32..=(start.0.max(end.0) + edge) as i32;
+        for row in rows {
+            for column in columns.clone() {
+                let (px, py) = (column as f32 + 0.5 - start.0, row as f32 + 0.5 - start.1);
+                // How far along the segment the nearest point lies, held to
+                // its two ends, which is what rounds them.
+                let along = if length_squared > 0.0 {
+                    ((px * run_x + py * run_y) / length_squared).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let (dx, dy) = (px - along * run_x, py - along * run_y);
+                let coverage = (edge - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
+                self.blend(column, row, color, coverage);
+            }
+        }
+    }
+
     /// Fill a disc, with one pixel of softness at its edge.
     ///
     /// Analytic like the arcs, and for the same reason: it is only ever used to
@@ -649,5 +682,25 @@ mod tests {
             canvas.pixels().iter().all(|pixel| *pixel != BLACK),
             "a zero sweep painted black, which is neither end of the shade"
         );
+    }
+
+    #[test]
+    fn a_stroke_fills_its_segment_and_rounds_its_ends() {
+        let mut canvas = Canvas::filled(20, 40, BLACK);
+        canvas.fill_stroke((10.0, 10.0), (10.0, 30.0), 4.0, WHITE);
+        // Solid along its length, empty beside it.
+        for y in 10..30 {
+            assert_eq!(canvas.pixel(9, y), Some(WHITE), "row {y} is not filled");
+            assert_eq!(canvas.pixel(4, y), Some(BLACK), "row {y} spilled sideways");
+        }
+        // The ends reach a half width past the points named, and no further.
+        assert_ne!(canvas.pixel(9, 8), Some(BLACK));
+        assert_eq!(canvas.pixel(9, 5), Some(BLACK));
+        assert_ne!(canvas.pixel(9, 31), Some(BLACK));
+        assert_eq!(canvas.pixel(9, 34), Some(BLACK));
+        // A stroke of no width draws nothing.
+        let mut empty = Canvas::filled(8, 8, BLACK);
+        empty.fill_stroke((1.0, 1.0), (6.0, 6.0), 0.0, WHITE);
+        assert!(empty.pixels().iter().all(|pixel| *pixel == BLACK));
     }
 }

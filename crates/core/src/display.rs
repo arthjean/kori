@@ -178,7 +178,7 @@ impl LcdMetric {
         match self {
             Self::CpuTemperature | Self::CpuLoad => "CPU",
             Self::GpuTemperature | Self::GpuLoad => "GPU",
-            Self::LiquidTemperature => "LIQUID",
+            Self::LiquidTemperature => "Liquid",
         }
     }
 
