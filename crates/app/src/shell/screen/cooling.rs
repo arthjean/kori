@@ -16,7 +16,7 @@ use kori_core::lighting::LightingCommand;
 use kori_core::profile::{Channel, CoolingProgram, Profile, SAFE_PROFILE_NAME};
 
 use crate::components::{
-    Button, ButtonVariant, ControlState, Note, NoteLevel, SelectOption, panel_surface, row_panel,
+    Button, ButtonVariant, ControlState, Note, NoteLevel, SelectOption, eyebrow, row_panel,
 };
 use crate::cooling::CoolingMode;
 use crate::feed::{Command, CommandSubject, OutcomeSeverity};
@@ -25,20 +25,19 @@ use gpui::Context;
 use std::time::Instant;
 
 use super::drag::Drag;
-use crate::theme::{RADIUS, color, space};
+use crate::theme::{RADIUS, color, space, text};
 
 use super::tab::{
     COOLING_TAB_DELETE, COOLING_TAB_MODE, COOLING_TAB_PROFILE, COOLING_TAB_REVERT, COOLING_TAB_SAVE,
 };
 use super::write::{COOLING_QUIET, WriteTarget};
-use super::{SelectField, SelectId, screen};
+use super::{SelectField, SelectId, block, screen, setting_card, setting_line};
 
-/// Width of the two selects that sit in the Cooling header.
+/// Width of the two selects on the program card.
 ///
-/// Narrower than the 260 they used to hold, which is what leaves the coolant
-/// readout beside them a column of its own at the 920-pixel target rather than
-/// pushing it onto a line by itself.
-pub const COOLING_SELECT_WIDTH: Pixels = px(228.0);
+/// One width for both, inside Paneflow's 190 to 260 clamp, so the two
+/// triggers end on one edge and their chevrons line up down the card.
+pub const COOLING_SELECT_WIDTH: Pixels = px(220.0);
 /// Side of the dot that marks a write still in flight.
 const STATUS_DOT: Pixels = px(6.0);
 /// The one moment a cooling edit is in flight, on its own mark.
@@ -72,7 +71,7 @@ fn write_status() -> Div {
         .child(
             div()
                 .min_w_0()
-                .text_sm()
+                .text_size(text::LABEL_SM)
                 .text_color(color::TEXT_MUTED.hsla())
                 .child("Saving. The hardware holds its previous program until this clears."),
         )
@@ -185,23 +184,17 @@ impl Shell {
             "Cooling",
             "Pump, fan and the onboard liquid-temperature curve.",
         )
-        .child(
-            // The program on its own surface, above the channels it governs.
+        .child(block(
+            // The program on its own card, above the channels it governs.
             // Which program is running and which profile selected it is one
             // question, and it is a different one from what each channel is
-            // doing about it, so the two are separate cards rather than one
-            // list with a heading.
-            panel_surface().child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    // Every caption on one line, whichever of the two
-                    // selects is the taller once a message sits under it.
-                    .items_start()
-                    .gap(space::MD)
-                    .w_full()
-                    .min_w_0()
-                    .child(div().flex_none().w(COOLING_SELECT_WIDTH).child(self.select(
+            // doing about it, so the two are separate cards.
+            eyebrow("Program"),
+            setting_card([
+                setting_line(
+                    SelectId::CoolingMode.label(),
+                    Some("What the pump and the fan follow.".into()),
+                    div().w(COOLING_SELECT_WIDTH).child(self.select(
                         SelectField {
                             id: SelectId::CoolingMode,
                             options: mode_options,
@@ -220,8 +213,12 @@ impl Shell {
                                 shell.schedule_write(WriteTarget::Cooling, cx);
                             }
                         },
-                    )))
-                    .child(div().flex_none().w(COOLING_SELECT_WIDTH).child(self.select(
+                    )),
+                ),
+                setting_line(
+                    SelectId::Profile.label(),
+                    Some("Cooling, lighting and the panel, stored together.".into()),
+                    div().w(COOLING_SELECT_WIDTH).child(self.select(
                         SelectField {
                             id: SelectId::Profile,
                             options: profiles,
@@ -235,23 +232,24 @@ impl Shell {
                         |shell, value, _| {
                             shell.feed.send(Command::ActivateProfile(value.to_string()));
                         },
-                    ))),
-            ),
-        );
+                    )),
+                ),
+            ]),
+        ));
 
         for alert in self.link.alerts() {
             surface = surface.child(Note::new(NoteLevel::Critical, alert.message()).render());
         }
 
         surface
-            .child(
-                // No heading: the two rows name themselves, and the freshness
-                // the subtitle used to carry is on every reading already,
-                // through the Stale and N/A qualifiers `readback` adds.
+            .child(block(
+                // The freshness a description would carry is on every reading
+                // already, through the Stale and N/A qualifiers `readback` adds.
+                eyebrow("Channels"),
                 row_panel()
                     .child(self.channel_row(Channel::Pump, &pump_write, cx))
                     .child(self.channel_row(Channel::Fan, &fan_write, cx)),
-            )
+            ))
             .child(
                 div()
                     .flex()

@@ -5,8 +5,8 @@
 //!
 //! The window asks the compositor for client-side decorations, so nothing else
 //! draws a title bar, a border or a resize handle for it. This module is that
-//! chrome, and it is the same one Paneflow draws: a 36-pixel bar carrying the
-//! caption buttons on its trailing edge, a rounded one-pixel frame, and an
+//! chrome, and it is the same one Paneflow draws: a full-width bar at least 32
+//! pixels tall carrying the caption buttons, a rounded one-pixel frame, and an
 //! invisible band around the window that starts a resize.
 //!
 //! Two things stay the compositor's decision rather than this window's. Under
@@ -18,8 +18,8 @@
 //!
 //! GPUI masks an element's children to a rectangle rather than to its radius,
 //! so nothing the window contains may paint an opaque fill into a corner. The
-//! shell keeps that true by insetting its cards from the window edge and
-//! leaving the ground to the surface this module paints.
+//! shell keeps that true by leaving the ground to the surface this module
+//! paints and insetting the one panel it raises from the window edge.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -46,9 +46,8 @@ pub type DragLatch = Rc<Cell<bool>>;
 
 /// Height of the caption bar at the current interface scale.
 ///
-/// Tied to the root font size so the bar grows with a 200% scale instead of
-/// clipping the controls it carries, and floored so it never becomes shorter
-/// than a pointer target at 100%.
+/// Paneflow's `max(1.75rem, 32px)`: tied to the root font size so the bar
+/// grows with a 200% scale instead of clipping the controls it carries.
 pub fn title_bar_height(window: &Window) -> Pixels {
     let scaled = window.rem_size() * 1.75;
     if scaled > TITLE_BAR_MIN_HEIGHT {
@@ -81,12 +80,11 @@ impl Corners {
     }
 }
 
-/// The caption bar: an empty drag strip, then the window's own controls.
+/// The caption bar: the window's own controls, then an empty drag strip.
 ///
-/// It has no surface of its own, neither a fill nor a divider: it is laid over
-/// the top of the window so the controls sit inside whatever card the shell put
-/// there, exactly as Paneflow's do inside its sidebar. Everything below it has
-/// to reserve [`title_bar_height`] so nothing is painted under the strip.
+/// It has no surface of its own, neither a fill nor a divider: the shell color
+/// shows through it, and the inset of the panel below is what separates the
+/// two, as in Paneflow's cockpit, which draws no hairline under its bar.
 pub fn title_bar(window: &Window, drag: &DragLatch) -> Stateful<Div> {
     let height = title_bar_height(window);
     let supported = window.window_controls();

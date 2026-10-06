@@ -18,11 +18,15 @@ use gpui::{Div, Pixels, SharedString, Stateful, div, prelude::*, px};
 
 use kori_core::profile::{CURVE_NODE_COUNT, Channel};
 
-use crate::components::{ControlState, Select, SelectOption, focus_visible};
+use crate::assets::Icon;
+use crate::components::{
+    ControlState, Select, SelectOption, focus_visible, hairline, icon, panel_surface, squircle,
+};
 use crate::shell::Shell;
 use crate::theme::{
-    FOCUS_RING, MENU_MAX_HEIGHT, MENU_MAX_WIDTH, MENU_MIN_WIDTH, MENU_OFFSET, MENU_RADIUS,
-    MENU_ROW_GAP, MENU_ROW_HEIGHT, RADIUS, color, space,
+    BLOCK_GAP, CARD_PADDING_X, FOCUS_RING, MENU_CHECK_SIZE, MENU_MAX_HEIGHT, MENU_MAX_WIDTH,
+    MENU_MIN_WIDTH, MENU_OFFSET, MENU_PADDING, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT,
+    ROW_RADIUS, SETTING_ROW_PADDING_X, SETTING_ROW_PADDING_Y, color, space, text,
 };
 use gpui::Context;
 use keyed::{Keyed, Set};
@@ -108,8 +112,12 @@ impl SelectId {
     /// around it does. A control on a device row does not: the row already
     /// names the device and the control is one of two on the line, so a caption
     /// over each one is a second line of text saying what the first line said.
+    /// Nor does one on a setting line, whose title is the caption.
     fn shows_label(self) -> bool {
-        !matches!(self, Self::ChannelMode(_) | Self::LcdMode)
+        !matches!(
+            self,
+            Self::ChannelMode(_) | Self::LcdMode | Self::CoolingMode | Self::Profile
+        )
     }
 }
 
@@ -188,26 +196,97 @@ impl Disclosure {
 pub const FIELD_WIDTH: Pixels = px(168.0);
 
 /// The standard heading and column of a destination.
+///
+/// Paneflow's Settings page: a 26-pixel heading, then one muted line saying
+/// what the page is for, as its Keyboard Shortcuts page carries under its own.
+/// Blocks follow at Paneflow's block gap. The column itself, its width and its
+/// margins, belongs to the shell, which lays every destination in the same one.
 fn screen(title: &'static str, subtitle: &'static str) -> Div {
-    div().flex().flex_col().gap(space::LG).w_full().child(
+    div().flex().flex_col().gap(BLOCK_GAP).w_full().child(
         div()
             .flex()
             .flex_col()
-            .gap(space::XS)
+            .gap(px(4.0))
             .child(
                 div()
-                    .text_lg()
+                    .text_size(text::HEADING)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(color::TEXT.hsla())
                     .child(title),
             )
             .child(
                 div()
-                    .text_sm()
+                    .text_size(text::BODY)
                     .text_color(color::TEXT_MUTED.hsla())
                     .child(subtitle),
             ),
     )
+}
+/// A block: its heading, and the card under it.
+///
+/// What every screen stacks. Paneflow's `Block`, which is a header and a card
+/// with nothing between them, so a page reads as a list of labeled cards.
+fn block(heading: impl IntoElement, card: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .min_w_0()
+        .child(heading)
+        .child(card)
+}
+/// A card of setting lines, each separated from the next by a hairline.
+///
+/// Paneflow's `SearchCard`. The hairline is inset by the card padding on both
+/// sides, so it stops where the text it separates stops rather than running
+/// into the curve of the corner.
+fn setting_card(lines: impl IntoIterator<Item = Div>) -> Div {
+    let mut card = panel_surface().px(px(0.0)).py(px(6.0)).gap(px(0.0));
+    for (index, line) in lines.into_iter().enumerate() {
+        if index > 0 {
+            card = card.child(div().px(CARD_PADDING_X).child(hairline()));
+        }
+        card = card.child(line);
+    }
+    card
+}
+/// One setting: what it is on the left, the control that sets it on the right.
+///
+/// Paneflow's `setting_text` beside its control: a 12-pixel medium title over
+/// an 11-pixel muted description, the control right-aligned and never squeezed.
+fn setting_line(
+    title: impl Into<SharedString>,
+    description: Option<SharedString>,
+    control: impl IntoElement,
+) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(space::LG)
+        .px(SETTING_ROW_PADDING_X)
+        .py(SETTING_ROW_PADDING_Y)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_size(text::BODY)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(color::TEXT.hsla())
+                        .child(title.into()),
+                )
+                .children(description.map(|description| {
+                    div()
+                        .text_size(text::LABEL_SM)
+                        .text_color(color::TEXT_MUTED.hsla())
+                        .child(description)
+                })),
+        )
+        .child(div().flex_none().child(control))
 }
 /// One line of the panel editor's grid.
 ///
@@ -221,33 +300,37 @@ fn field_line(controls: Vec<Div>) -> Div {
             .map(|control| div().flex_none().w(FIELD_WIDTH).child(control)),
     )
 }
-/// A row of metric tiles that wraps rather than scrolling sideways.
-fn metric_row() -> Div {
-    div().flex().flex_wrap().gap(space::XL).w_full().min_w_0()
-}
+/// Width of the label column of a recorded fact, Paneflow's System Info
+/// dialog sets 116 for its own; device names here run longer.
+const FACT_LABEL_WIDTH: Pixels = px(148.0);
 /// One recorded fact of the diagnostics screen: what it is, and what it says.
 ///
 /// Both sides are taken as `SharedString` rather than as two functions, one for
 /// a literal label and one for a built one: the device rows name themselves
 /// from the capability record, and a second entry point whose only work was a
 /// `to_string` is indirection the caller has to choose between.
+///
+/// Set as Paneflow's System Info rows: a fixed muted label column, then the
+/// value in the full text color, so every value on the card starts on one edge.
 fn setting_row(label: impl Into<SharedString>, value: impl Into<SharedString>) -> Div {
     div()
         .flex()
-        .justify_between()
-        .gap(space::LG)
-        .py(space::XS)
+        .gap(space::MD)
+        .px(SETTING_ROW_PADDING_X)
+        .py(SETTING_ROW_PADDING_Y)
+        .text_size(text::BODY)
         .child(
             div()
                 .text_color(color::TEXT_MUTED.hsla())
                 .flex_none()
+                .w(FACT_LABEL_WIDTH)
                 .child(label.into()),
         )
         .child(
             div()
                 .text_color(color::TEXT.hsla())
                 .flex_1()
-                .text_align(gpui::TextAlign::Right)
+                .min_w_0()
                 .child(value.into()),
         )
 }
@@ -258,8 +341,12 @@ fn setting_row(label: impl Into<SharedString>, value: impl Into<SharedString>) -
 fn option_menu(content: impl IntoElement) -> impl IntoElement {
     popover_surface(menu_surface(content).min_w(MENU_MIN_WIDTH))
 }
-/// The menu skin: radius, lifted surface, hairline, and the geometry every menu
-/// shares. What sets the width stays with the caller.
+/// The menu skin: Paneflow's `menu_panel`.
+///
+/// A continuous corner of 18 on the lifted surface, a hairline of the border
+/// color at 0.6, no shadow, and 7 pixels of padding around rows set 1 apart.
+/// The skin is painted on the shell and the rows scroll in a list inside it,
+/// so a long list scrolls under a corner that stays where it is.
 fn menu_surface(content: impl IntoElement) -> Stateful<Div> {
     div()
         .id("popover-surface")
@@ -268,21 +355,28 @@ fn menu_surface(content: impl IntoElement) -> Stateful<Div> {
         // list on the way down, and the option the operator was
         // pressing would be gone before the release reached it.
         .occlude()
+        .relative()
         .flex()
         .flex_col()
-        .gap(MENU_ROW_GAP)
         .max_w(MENU_MAX_WIDTH)
         .max_h(MENU_MAX_HEIGHT)
-        .overflow_y_scroll()
-        .p(space::XS)
-        .rounded(MENU_RADIUS)
-        // Lifted surface and a hairline at 0.6, no drop shadow: the menu is
-        // told apart from the panel by its luminance, which is how Paneflow's
-        // menus read in front without casting anything.
-        .bg(color::MENU.hsla())
-        .border_1()
-        .border_color(color::SEPARATOR.alpha(0.6))
-        .child(content)
+        .child(squircle::fill(MENU_RADIUS, color::MENU.hsla()))
+        .child(squircle::border(
+            MENU_RADIUS,
+            px(1.0),
+            color::SEPARATOR.alpha(0.6),
+        ))
+        .child(
+            div()
+                .id("popover-list")
+                .flex()
+                .flex_col()
+                .min_h_0()
+                .gap(MENU_ROW_GAP)
+                .p(MENU_PADDING)
+                .overflow_y_scroll()
+                .child(content),
+        )
 }
 /// Float a built menu over the screen.
 ///
@@ -350,52 +444,57 @@ impl Shell {
                         let value = option.value.clone();
                         let chosen = option.value == current;
                         let on_select = Rc::clone(&on_select);
-                        // Whisper highlights, the selected row a step stronger
-                        // than a hovered one: a menu that marks its current
-                        // value with the selection accent reads as if choosing
-                        // had already happened.
-                        let resting = if chosen {
-                            color::TEXT.alpha(0.10)
-                        } else {
-                            color::TEXT.alpha(0.0)
-                        };
-                        let hovered = if chosen {
-                            color::TEXT.alpha(0.10)
-                        } else {
-                            color::TEXT.alpha(0.05)
-                        };
-                        div()
-                            .id(SharedString::from(format!("{key}-{}", option.value)))
-                            // Its own stop in the reserved menu range. Every row
-                            // used to take the trigger's index, which is the
-                            // invariant `tab.rs` asserts broken in the one place
-                            // its tests do not reach.
-                            .tab_index(MENU_TAB_BASE + index as isize)
-                            .tab_stop(true)
-                            .flex_none()
-                            .w_full()
-                            .h(MENU_ROW_HEIGHT)
-                            .flex()
-                            .items_center()
-                            .gap(space::SM)
-                            .px(space::SM)
-                            .rounded(RADIUS)
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(color::TEXT.hsla())
-                            .bg(resting)
-                            .hover(|this| this.bg(hovered))
-                            .when(focus_visible(), |this| {
-                                this.focus(|this| {
-                                    this.border(FOCUS_RING).border_color(color::FOCUS.hsla())
-                                })
+                        // Paneflow's `select_item`: whisper washes of the text
+                        // color, the chosen row a step stronger than a hovered
+                        // one, and a check on it. A menu that marked its value
+                        // with the accent would read as if choosing had already
+                        // happened.
+                        let row_id = format!("{key}-{}", option.value);
+                        squircle::skin(
+                            div().id(SharedString::from(row_id.clone())),
+                            SharedString::from(format!("{row_id}-skin")),
+                            ROW_RADIUS,
+                            chosen.then(|| color::TEXT.alpha(color::WASH_SELECTED)),
+                            (!chosen).then(|| color::TEXT.alpha(color::WASH_HOVER)),
+                        )
+                        // Its own stop in the reserved menu range. Every row
+                        // used to take the trigger's index, which is the
+                        // invariant `tab.rs` asserts broken in the one place
+                        // its tests do not reach.
+                        .tab_index(MENU_TAB_BASE + index as isize)
+                        .tab_stop(true)
+                        .flex_none()
+                        .w_full()
+                        .h(MENU_ROW_HEIGHT)
+                        .flex()
+                        .items_center()
+                        .gap(space::SM)
+                        .px(space::SM)
+                        .rounded(ROW_RADIUS)
+                        .cursor_pointer()
+                        .text_size(text::BODY)
+                        .text_color(color::TEXT.hsla())
+                        .when(focus_visible(), |this| {
+                            this.focus(|this| {
+                                this.border(FOCUS_RING).border_color(color::FOCUS.hsla())
                             })
-                            .child(div().flex_1().min_w_0().truncate().child(option.label))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                on_select(this, &value, cx);
-                                this.interaction.dismiss();
-                                cx.notify();
-                            }))
+                        })
+                        .child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(option.label),
+                        )
+                        .children(chosen.then(|| {
+                            icon(Icon::Check, MENU_CHECK_SIZE, color::TEXT.hsla()).flex_none()
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            on_select(this, &value, cx);
+                            this.interaction.dismiss();
+                            cx.notify();
+                        }))
                     }),
                 ),
             ))
@@ -436,14 +535,19 @@ mod tests {
     }
 
     /// The caption is a property of where the control sits. The two selects on
-    /// a device row are named by the row; every other one names itself.
+    /// a device row are named by the row, the two on the program card by their
+    /// setting line; every other one names itself.
     #[test]
     fn only_the_selects_a_row_already_names_hide_their_caption() {
-        assert!(!SelectId::ChannelMode(1).shows_label());
-        assert!(!SelectId::LcdMode.shows_label());
         for id in [
+            SelectId::ChannelMode(1),
+            SelectId::LcdMode,
             SelectId::CoolingMode,
             SelectId::Profile,
+        ] {
+            assert!(!id.shows_label(), "{id:?} is named twice");
+        }
+        for id in [
             SelectId::ChannelSpeed(1),
             SelectId::ChannelDirection(1),
             SelectId::LcdMetric(0),

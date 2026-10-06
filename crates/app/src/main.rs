@@ -68,6 +68,12 @@ fn main() -> ExitCode {
         .with_http_client(std::sync::Arc::new(NoNetwork))
         .run(move |cx| {
             cx.bind_keys(key_bindings());
+            // A face that failed to register is not a reason to refuse to
+            // start: the text system falls back to the platform face, and the
+            // window still says everything it has to.
+            if let Err(error) = kori_app::assets::load_fonts(cx) {
+                eprintln!("{PRODUCT_NAME}: the bundled interface face did not load: {error}");
+            }
 
             let bounds = Bounds::centered(None, size(WINDOW_WIDTH, WINDOW_HEIGHT), cx);
             let window = cx.open_window(

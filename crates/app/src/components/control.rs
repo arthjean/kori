@@ -17,13 +17,13 @@ use gpui::{
 
 use crate::assets::Icon;
 use crate::theme::{
-    CONTROL_HEIGHT, Color, MENU_GLYPH_SIZE, RADIUS, SWATCH_RADIUS, SWATCH_SIZE, color,
-    numeric_font, space,
+    BUTTON_HEIGHT, Color, FOCUS_RING, MENU_GLYPH_SIZE, ROW_RADIUS, SWATCH_RADIUS, SWATCH_SIZE,
+    color, numeric_font, space, text,
 };
 
 use super::{
     ButtonVariant, ControlState, control_pill, field, focus_ring, icon, select_chevron,
-    slider_surface,
+    slider_surface, squircle,
 };
 
 /// A labeled action.
@@ -61,12 +61,18 @@ impl Button {
         self
     }
 
+    /// The sentence the button's state carries, if any: why it refuses, or
+    /// what is wrong with what it would act on.
+    pub fn state_message(&self) -> Option<SharedString> {
+        self.state.message().cloned()
+    }
+
     fn fill(&self) -> Hsla {
         if !self.state.is_enabled() {
             return color::CONTROL.alpha(0.4);
         }
         match self.variant {
-            ButtonVariant::Primary => color::ACCENT.hsla(),
+            ButtonVariant::Primary => color::SOLID.hsla(),
             ButtonVariant::Secondary => color::CONTROL.hsla(),
             ButtonVariant::Danger => color::DESTRUCTIVE.hsla(),
         }
@@ -77,7 +83,7 @@ impl Button {
             return color::TEXT_DISABLED.hsla();
         }
         match self.variant {
-            ButtonVariant::Primary => color::TEXT_ON_ACCENT.hsla(),
+            ButtonVariant::Primary => color::TEXT_ON_SOLID.hsla(),
             ButtonVariant::Secondary => color::TEXT.hsla(),
             ButtonVariant::Danger => color::TEXT_ON_DESTRUCTIVE.hsla(),
         }
@@ -85,17 +91,14 @@ impl Button {
 
     /// The fill under the pointer.
     ///
-    /// A button lifts where a field sinks, so the two share a resting fill and
-    /// part ways on hover. The accent has a lift of its own; the secondary takes
-    /// the raised control fill.
-    ///
-    /// The destructive button is the exception that deepens instead. It carries
-    /// white at full opacity, and lifting a red that already sits near the
-    /// contrast floor would take its own label under it.
+    /// Paneflow's two rules: a secondary button lifts 6% toward the text color,
+    /// and a solid one, blue or red, deepens by 0.05 in lightness, because
+    /// lifting a fill that carries white would take its own label under the
+    /// contrast floor.
     fn hover_fill(&self) -> Hsla {
         match self.variant {
-            ButtonVariant::Primary => color::ACCENT_HOVER.hsla(),
-            ButtonVariant::Secondary => color::CONTROL_RAISED.hsla(),
+            ButtonVariant::Primary => color::SOLID_HOVER.hsla(),
+            ButtonVariant::Secondary => color::CONTROL_HOVER.hsla(),
             ButtonVariant::Danger => color::DESTRUCTIVE_HOVER.hsla(),
         }
     }
@@ -105,38 +108,38 @@ impl Button {
         let label_color = self.label_color();
         let hover_fill = self.hover_fill();
         let enabled = self.state.is_enabled();
-        let pressed = match self.variant {
-            ButtonVariant::Primary => color::ACCENT_ACTIVE.hsla(),
-            ButtonVariant::Secondary => color::CONTROL_HOVER.hsla(),
-            ButtonVariant::Danger => color::DESTRUCTIVE_ACTIVE.hsla(),
-        };
 
-        // Paneflow's `secondary_button` geometry, on the pill every control on
-        // the screen is cut from: no outline, the same corner, the same 12px
-        // medium label. Wider than a field is padded, because a button is read
-        // by its label and a label needs air on both sides of it.
-        let base = div()
-            .id(self.key.clone())
-            .flex()
-            .items_center()
-            .justify_center()
-            .min_h(CONTROL_HEIGHT)
-            .px(space::MD)
-            .py(space::XS)
-            .rounded(RADIUS)
-            .bg(fill)
-            .text_xs()
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(label_color)
-            .child(self.label);
+        // Paneflow's `secondary_button` and `solid_button`: 10 by 4 around a
+        // 12-pixel medium label, on a continuous corner of 14. The fills are
+        // painted by the skin rather than as a background, which is what gives
+        // the button that corner; the ring is still a plain rounded border,
+        // because it is drawn by the element and not by the skin.
+        let group = SharedString::from(format!("{}-skin", self.key));
+        let base = squircle::skin(
+            div().id(self.key.clone()),
+            group,
+            ROW_RADIUS,
+            Some(fill),
+            enabled.then_some(hover_fill),
+        )
+        .flex()
+        .items_center()
+        .justify_center()
+        .min_h(BUTTON_HEIGHT)
+        .px(px(10.0) - FOCUS_RING)
+        .py(px(4.0) - FOCUS_RING)
+        .rounded(ROW_RADIUS)
+        .text_size(text::BODY)
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(label_color)
+        // The label is a child of its own so it sits above both fill layers.
+        .child(div().relative().child(self.label));
 
         let base = focus_ring(base, enabled);
         if enabled {
             base.tab_index(self.tab_index)
                 .tab_stop(true)
                 .cursor_pointer()
-                .hover(|this| this.bg(hover_fill))
-                .active(|this| this.bg(pressed))
         } else {
             // A disabled control is not a tab stop: keyboard traversal must not
             // stop on something that cannot be operated.
@@ -246,9 +249,8 @@ impl Select {
 
 /// Height of a slider's track.
 const TRACK_HEIGHT: Pixels = px(4.0);
-/// Size of the handle that rides the track.
-const HANDLE_WIDTH: Pixels = px(14.0);
-const HANDLE_HEIGHT: Pixels = px(22.0);
+/// Side of the knob that rides the track: Paneflow's toggle knob.
+const KNOB: Pixels = px(16.0);
 
 /// A bounded numeric control the pointer can drag.
 ///
@@ -349,12 +351,12 @@ impl Slider {
         let fraction = self.fraction();
         let enabled = self.state.is_enabled();
         let fill = if enabled {
-            color::ACCENT.hsla()
+            color::SWITCH.hsla()
         } else {
             color::TEXT_DISABLED.alpha(0.6)
         };
         let handle = if enabled {
-            color::TEXT.hsla()
+            color::TEXT_ON_SOLID.hsla()
         } else {
             color::TEXT_DISABLED.hsla()
         };
@@ -383,7 +385,7 @@ impl Slider {
         // attempt measured with an absolutely positioned canvas beside an
         // overlay of styled divs, and that canvas was laid out at zero width:
         // every press converted against an empty rectangle and was dropped.
-        let track = div().flex_1().min_w_0().h(HANDLE_HEIGHT).child(
+        let track = div().flex_1().min_w_0().h(KNOB).child(
             canvas(
                 move |bounds: Bounds<Pixels>, _, _| {
                     if let Some(sink) = &sink {
@@ -446,11 +448,9 @@ fn paint_track(
         },
         size: gpui::size(bounds.size.width, TRACK_HEIGHT),
     };
-    // A channel cut into the pill rather than a line drawn on it. What has to
-    // be legible is the boundary between the filled part and the empty one,
-    // and the darkest surface puts that boundary at 3.5:1 against the accent
-    // where a separator left it at 2.2:1.
-    window.paint_quad(gpui::fill(rail, color::RAIL.hsla()).corner_radii(radius));
+    // Paneflow's toggle track when off. What has to be legible is the boundary
+    // between the filled part and the empty one, which this puts past 3:1.
+    window.paint_quad(gpui::fill(rail, color::TRACK.hsla()).corner_radii(radius));
 
     let filled = Bounds {
         origin: rail.origin,
@@ -458,29 +458,27 @@ fn paint_track(
     };
     window.paint_quad(gpui::fill(filled, fill).corner_radii(radius));
 
-    let left = (bounds.size.width * fraction - HANDLE_WIDTH / 2.0)
-        .clamp(px(0.0), (bounds.size.width - HANDLE_WIDTH).max(px(0.0)));
+    let left = (bounds.size.width * fraction - KNOB / 2.0)
+        .clamp(px(0.0), (bounds.size.width - KNOB).max(px(0.0)));
     let knob = Bounds {
         origin: Point {
             x: bounds.origin.x + left,
-            y: bounds.origin.y + (bounds.size.height - HANDLE_HEIGHT) / 2.0,
+            y: bounds.origin.y + (bounds.size.height - KNOB) / 2.0,
         },
-        size: gpui::size(HANDLE_WIDTH, HANDLE_HEIGHT),
+        size: gpui::size(KNOB, KNOB),
     };
-    // Concentric with the pill around it: the handle sits one padding step
-    // inside a corner of [`RADIUS`], so its own corner is that much tighter.
-    // Matched radii is what keeps a nested shape from reading as a sticker.
-    let handle_radius = RADIUS - space::XS;
+    // Round and white, as the knob of a Paneflow toggle is, with a ring of the
+    // shell color: white alone sits under 3:1 on the blue it rides.
     window.paint_quad(
         gpui::quad(
             knob,
-            handle_radius,
+            KNOB / 2.0,
             handle,
             px(1.0),
             color::RAIL.hsla(),
             gpui::BorderStyle::Solid,
         )
-        .corner_radii(handle_radius),
+        .corner_radii(KNOB / 2.0),
     );
 }
 

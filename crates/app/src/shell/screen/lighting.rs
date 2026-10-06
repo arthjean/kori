@@ -8,7 +8,7 @@
 //! are one screen: the controller card lists its channels, the Kraken card
 //! carries its panel, and each row opens the controls that belong to it alone.
 
-use gpui::{Div, div, prelude::*, px};
+use gpui::{Div, div, prelude::*};
 
 use kori_core::capability::CapabilityId;
 use kori_core::ipc::ChannelState;
@@ -16,11 +16,11 @@ use kori_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
 use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 
 use crate::assets::Icon;
-use crate::components::{ControlState, Note, NoteLevel, SelectOption, row_panel};
+use crate::components::{ControlState, Note, NoteLevel, SelectOption, eyebrow, row_panel};
 use crate::feed::{Command, CommandSubject};
 use crate::lighting::LightingMode;
 use crate::shell::Shell;
-use crate::theme::{color, space};
+use crate::theme::{color, space, text};
 use gpui::Context;
 
 use super::row::ROW_DETAIL_INDENT;
@@ -32,7 +32,7 @@ use super::tab::{
     lighting_row_tab,
 };
 use super::write::WriteTarget;
-use super::{FIELD_WIDTH, SelectField, SelectId, screen};
+use super::{FIELD_WIDTH, SelectField, SelectId, block, screen};
 
 /// What the controller's card is headed with.
 ///
@@ -83,13 +83,12 @@ impl Shell {
         let fixed = self
             .link
             .control_state(RGB_CONTROLLER, CapabilityId::RgbFixedColor);
-        let card = Self::device_card(RGB_CONTROLLER_NAME);
-
         // No channel means the controller has not told this daemon what it is.
         // The reason the capability record carries is the whole content of the
-        // card: there is nothing to control and nothing to pretend about.
+        // block: there is nothing to control and nothing to pretend about.
         if channels.is_empty() {
-            return card.child(
+            return Self::device_card(
+                RGB_CONTROLLER_NAME,
                 Note::new(
                     NoteLevel::Warning,
                     fixed.message().cloned().unwrap_or_else(|| {
@@ -107,7 +106,7 @@ impl Shell {
         for (index, channel) in channels.iter().enumerate() {
             rows.push(self.channel_row_lighting(*channel, index, cx));
         }
-        card.children(rows)
+        Self::device_card(RGB_CONTROLLER_NAME, row_panel().children(rows))
     }
 
     /// The Kraken and the row its panel occupies.
@@ -119,7 +118,10 @@ impl Shell {
         let name = self
             .reported_name(KRAKEN_BASE)
             .unwrap_or_else(|| "Kraken".to_string());
-        Self::device_card(&name).child(self.lcd_row(lcd_row_tab(channel_count), cx))
+        Self::device_card(
+            &name,
+            row_panel().child(self.lcd_row(lcd_row_tab(channel_count), cx)),
+        )
     }
 
     /// The product string a device reported, if it answered at all.
@@ -131,50 +133,21 @@ impl Shell {
             .map(|summary| summary.name)
     }
 
-    /// The card one device gets: what it is, and its rows.
+    /// The block one device gets: what it is, over what it holds.
     ///
-    /// `name` is what the card is headed with. Where it is a fixed string, the
+    /// `name` is what the block is headed with. Where it is a fixed string, the
     /// product string the device reported is deliberately not shown: that
     /// string carries a vendor wordmark this product does not use, and what the
     /// operator needs from the heading is which of the two devices this is. The
     /// reported string is still on the monitoring screen's device strip,
     /// unchanged, which is where identifying the exact hardware belongs.
     ///
-    /// The header carries the name alone. Firmware, kernel binding and state
-    /// are all on that strip, which is the screen for identifying hardware;
+    /// The heading is Paneflow's eyebrow, outside the card, and carries the
+    /// name alone. Firmware, kernel binding and state are all on that strip;
     /// repeating them over every card put a line of provenance above controls
     /// that are about appearance.
-    fn device_card(name: &str) -> Div {
-        let name = name.to_string();
-
-        row_panel().child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .justify_between()
-                .gap(space::MD)
-                .w_full()
-                .min_w_0()
-                .child(
-                    // Claims the line rather than being sized by its own text.
-                    // Left to measure itself, the block collapsed to its
-                    // narrowest column and set the device name one letter per
-                    // line down the side of the card.
-                    div()
-                        .flex()
-                        .flex_1()
-                        .flex_col()
-                        .min_w_0()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .text_color(color::TEXT.hsla())
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(name),
-                        ),
-                ),
-        )
+    fn device_card(name: &str, content: impl IntoElement) -> Div {
+        block(eyebrow(name.to_string()), content)
     }
 
     /// One lighting channel as a single line, with its controls one press away.
@@ -342,7 +315,7 @@ impl Shell {
             .pl(ROW_DETAIL_INDENT)
             .child(
                 div()
-                    .text_xs()
+                    .text_size(text::LABEL_SM)
                     .text_color(color::TEXT_MUTED.hsla())
                     .child(sent),
             )

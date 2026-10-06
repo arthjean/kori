@@ -7,12 +7,12 @@
 //! interface can be checked as a system: the contrast tests below run against
 //! these values, not against a screenshot.
 //!
-//! The neutral surfaces and the status hues are Paneflow's dark UI palette
-//! (`theme::model::ui_colors_with`, dark branch), so the two windows read as the
-//! same desktop chrome rather than as two products that happen to both be dark.
-//! The accent stays this project's violet: Paneflow signs its own chrome in
-//! teal, and an operator running both should still know which window is holding
-//! the pump. Nothing here reuses a vendor logo, asset or wordmark.
+//! The system is Paneflow's, taken whole rather than sampled: its dark palette
+//! (`theme::model::ui_colors_with`, dark branch), its geometry and its type
+//! scale, as `DESIGN.md` in that repository states them. Kori used to keep a
+//! violet accent of its own to tell the two windows apart; it now wears
+//! Paneflow's teal, and the window title is what says which product is open.
+//! Nothing here reuses a vendor logo, asset or wordmark.
 
 use gpui::{Font, FontFeatures, FontStyle, FontWeight, Hsla, Pixels, Rgba, px};
 use std::sync::Arc;
@@ -78,8 +78,8 @@ impl Color {
     /// `readable_ink_clears_the_non_text_bar_on_any_color` measures over the
     /// whole cube rather than over the colors this product happens to offer.
     pub fn readable_ink(self) -> Self {
-        if self.contrast(color::TEXT_ON_ACCENT) >= self.contrast(color::RAIL) {
-            color::TEXT_ON_ACCENT
+        if self.contrast(color::TEXT_ON_SOLID) >= self.contrast(color::RAIL) {
+            color::TEXT_ON_SOLID
         } else {
             color::RAIL
         }
@@ -105,69 +105,57 @@ impl From<kori_core::lighting::Rgb> for Color {
     }
 }
 
-/// The palette.
+/// The palette: Paneflow Dark, role for role.
 pub mod color {
     use super::Color;
 
-    /// Fixed navigation rail, darkest surface.
-    ///
-    /// Paneflow's chrome background, the one its title bar carries. The rail is
-    /// this window's chrome, so it sits under the work surface for the same
-    /// reason: the frame is the thing the content is laid on.
+    /// The shell: title bar, navigation rail and the ground around the panel.
+    /// Paneflow's `overlay`, which is what its cockpit chrome paints.
     pub const RAIL: Color = Color::rgb(0x141414);
-    /// Charcoal work surface. Paneflow's `base`.
+    /// The main panel the screens are laid on. Paneflow's `base`.
+    ///
+    /// Lighter than the shell around it, which is what makes the inset panel
+    /// read as a card without a shadow.
     pub const SURFACE: Color = Color::rgb(0x181818);
-    /// Raised panel on the work surface. Paneflow's `surface`.
-    pub const PANEL: Color = Color::rgb(0x212121);
-    /// Input and control fill. Paneflow's `subtle`.
+    /// A card on the panel. Paneflow's `card`, the role its Settings cards
+    /// and dialogs are drawn on.
+    pub const PANEL: Color = Color::rgb(0x232323);
+    /// Input and control fill. Paneflow's `subtle`, one step above a card so a
+    /// control on one stays visible.
     pub const CONTROL: Color = Color::rgb(0x2a2a2a);
-    /// The same fill under the pointer.
-    ///
-    /// [`CONTROL`] darkened by 0.04 in HSL lightness rather than lightened, as
-    /// Paneflow's `select_trigger` does: on a dark surface a control that sinks
-    /// under the pointer reads as pressable, while one that brightens reads as
-    /// already selected.
-    pub const CONTROL_HOVER: Color = Color::rgb(0x202020);
-    /// The same fill under the pointer, on a button.
-    ///
-    /// [`CONTROL`] mixed 6% toward [`TEXT`], which is Paneflow's
-    /// `secondary_button`. A button lifts where a field sinks: one is a thing
-    /// to press, the other a thing to open, and the direction of the change is
-    /// what says which.
-    pub const CONTROL_RAISED: Color = Color::rgb(0x343536);
+    /// The same fill under the pointer: [`CONTROL`] moved 6% toward [`TEXT`],
+    /// which is Paneflow's `select_trigger` and `secondary_button` alike.
+    pub const CONTROL_HOVER: Color = Color::rgb(0x353535);
     /// Low-contrast separator. Paneflow's `border`.
     pub const SEPARATOR: Color = Color::rgb(0x252525);
-    /// Surface a floating menu is drawn on.
-    ///
-    /// [`PANEL`] lifted by 0.035 in HSL lightness, which is how Paneflow's
-    /// `select_menu_surface` separates a menu from the panel under it: a menu
-    /// hovering over a surface of its own color reads as part of it, and the
-    /// lift is what says the menu is in front rather than in the page.
-    ///
-    /// On this palette that lands on [`CONTROL`] exactly, as it does in
-    /// Paneflow. The two stay separate tokens because they are separate
-    /// decisions: one is a fill a control carries, the other a layer over the
-    /// page, and the day either derivation moves the other must not follow.
+    /// Surface a floating menu is drawn on: Paneflow's `surface` lifted by
+    /// 0.035 in HSL lightness, which is how `select_menu_surface` puts a menu
+    /// in front of the page without a shadow.
     pub const MENU: Color = Color::rgb(0x2a2a2a);
+    /// The empty part of a track: [`TEXT_MUTED`] at 0.30 over a card, which is
+    /// Paneflow's toggle track when off, kept opaque so it can be measured.
+    pub const TRACK: Color = Color::rgb(0x494949);
 
-    /// The single selection accent.
-    ///
-    /// Dark enough for white label text to clear 4.5:1 on top of it, light
-    /// enough to clear 3:1 against the work surface behind it.
-    pub const ACCENT: Color = Color::rgb(0x6f4ef2);
-    pub const ACCENT_HOVER: Color = Color::rgb(0x7a5af0);
-    pub const ACCENT_ACTIVE: Color = Color::rgb(0x5f3fd8);
-    /// Focus ring, light enough to read on the accent it may sit against.
-    pub const FOCUS: Color = Color::rgb(0xcdbcff);
+    /// Paneflow's `accent`. Links, selected metadata and data: the readings,
+    /// the curve, the history. Never a fill under text.
+    pub const ACCENT: Color = Color::rgb(0x57d5c4);
+    /// Paneflow's toggle blue: the filled part of a track a pointer drags.
+    pub const SWITCH: Color = Color::rgb(0x339cff);
+    /// A solid action under a white label: Paneflow's update blue, the one
+    /// blue of its palette that holds white at 4.5:1.
+    pub const SOLID: Color = Color::rgb(0x1a6ff6);
+    /// The same fill under the pointer, 0.05 darker as `solid_button` does.
+    pub const SOLID_HOVER: Color = Color::rgb(0x0961ed);
+    /// Focus ring. Paneflow's `FOCUS_BLUE`.
+    pub const FOCUS: Color = Color::rgb(0x007aff);
 
-    /// Paneflow's `text`: a cool near-white rather than a neutral one, which is
-    /// what keeps a page of readouts from reading as printed paper.
-    pub const TEXT: Color = Color::rgb(0xd5deea);
-    /// Paneflow's `muted`.
-    pub const TEXT_MUTED: Color = Color::rgb(0x96a2b3);
-    pub const TEXT_DISABLED: Color = Color::rgb(0x6b7280);
-    /// Text drawn on top of the accent.
-    pub const TEXT_ON_ACCENT: Color = Color::rgb(0xffffff);
+    /// Paneflow's `text`. Hue-free, as every neutral of the shell is.
+    pub const TEXT: Color = Color::rgb(0xdddddd);
+    /// Paneflow's `muted`: secondary text, icons at rest, eyebrows.
+    pub const TEXT_MUTED: Color = Color::rgb(0xa0a0a0);
+    pub const TEXT_DISABLED: Color = Color::rgb(0x6b6b6b);
+    /// Text drawn on top of a solid fill.
+    pub const TEXT_ON_SOLID: Color = Color::rgb(0xffffff);
 
     /// Paneflow's `vc_added`.
     pub const SUCCESS: Color = Color::rgb(0x57d992);
@@ -179,29 +167,76 @@ pub mod color {
     /// saturated one. Paneflow's `vc_deleted`, which is the same tradeoff.
     pub const DANGER: Color = Color::rgb(0xff6f6a);
 
-    /// Fill of a destructive action, at full opacity.
-    ///
-    /// Apple's dark-mode `systemRed`. A tinted fill was the previous answer and
-    /// it made the one irreversible control on the screen look like a quieter
-    /// version of the two beside it. A destructive button is the one thing that
-    /// should never be pressed by mistake, so it is the one thing that carries a
-    /// solid fill.
+    /// Fill of a destructive action. Paneflow's fixed `#ff453a`, the system
+    /// red, under a white label.
     ///
     /// Deliberately *not* [`DANGER`]. That token is a word on a surface and is
     /// held to the body-text bar; this one is a surface a word sits on, and the
     /// two cannot be the same color without one of them failing its own job.
     pub const DESTRUCTIVE: Color = Color::rgb(0xff453a);
-    /// The same fill under the pointer, and pressed.
-    ///
-    /// Deepening rather than lightening, which is the opposite of what
-    /// [`ACCENT_HOVER`] does. A lighter red loses contrast against the white
-    /// label it carries: the same lift the accent uses would take this button
-    /// under 3:1, where deepening walks it up past 4:1 instead.
-    pub const DESTRUCTIVE_HOVER: Color = Color::rgb(0xf03028);
-    pub const DESTRUCTIVE_ACTIVE: Color = Color::rgb(0xcc2a22);
+    /// The same fill under the pointer, 0.05 darker in HSL lightness as
+    /// Paneflow's `solid_button` does. Deepening rather than lifting is what
+    /// keeps the white label above 3:1.
+    pub const DESTRUCTIVE_HOVER: Color = Color::rgb(0xff2d20);
     /// Text drawn on top of a destructive fill.
     pub const TEXT_ON_DESTRUCTIVE: Color = Color::rgb(0xffffff);
+
+    /// The entities the Monitoring charts plot, one hue each.
+    ///
+    /// Color follows the entity, never its rank: the CPU is this teal in every
+    /// chart that draws it. The five are the dark-mode categorical steps,
+    /// held inside the OKLCH lightness band 0.48 to 0.67 so none of them shouts
+    /// over the others, and run through the dataviz validator on the card
+    /// surface: the three that share the temperature chart clear every
+    /// all-pairs check (worst CVD separation 13.0, worst normal-vision 19.9),
+    /// as do the two that share the cooling chart (15.9 and 26.5). The CPU
+    /// teal is [`ACCENT`] stepped down into that band.
+    pub const SERIES_CPU: Color = Color::rgb(0x35a898);
+    pub const SERIES_GPU: Color = Color::rgb(0xd95926);
+    pub const SERIES_COOLANT: Color = Color::rgb(0x9085e9);
+    pub const SERIES_PUMP: Color = Color::rgb(0x3987e5);
+    pub const SERIES_FAN: Color = Color::rgb(0xd55181);
+    /// A gridline: one step off the card, solid, recessive.
+    pub const GRID: Color = Color::rgb(0x303030);
+
+    /// The translucent washes every row, menu item and nav entry is lit with.
+    ///
+    /// Paneflow has one highlight material: an alpha of the text color, never a
+    /// per-component fill. These are its four steps.
+    pub const WASH_HOVER: f32 = 0.05;
+    pub const WASH_SELECTED: f32 = 0.10;
+    pub const NAV_HOVER: f32 = 0.10;
+    pub const NAV_ACTIVE: f32 = 0.16;
 }
+
+/// Type scale, Paneflow's `ui_primitives` constants plus its two headings.
+pub mod text {
+    use gpui::{Pixels, px};
+
+    /// Micro chips and hints.
+    pub const LABEL_XS: Pixels = px(10.0);
+    /// Eyebrows and descriptions.
+    pub const LABEL_SM: Pixels = px(11.0);
+    /// Body text, and the size of the interface at its root.
+    pub const BODY: Pixels = px(12.0);
+    /// A row title that has to outrank body.
+    pub const BODY_EMPHASIS: Pixels = px(13.0);
+    /// Card titles and empty-state titles.
+    pub const TITLE: Pixels = px(14.0);
+    /// Navigation rail entries, set larger in the system face as Paneflow's.
+    pub const NAV: Pixels = px(14.0);
+    /// Line height of a navigation entry.
+    pub const NAV_LINE: Pixels = px(20.0);
+    /// A large reading, where the number is the whole point of the tile.
+    pub const READING: Pixels = px(20.0);
+    /// The page heading.
+    pub const HEADING: Pixels = px(26.0);
+}
+
+/// The interface face, bundled so every machine renders the same letters.
+pub const UI_FONT: &str = "Geist";
+/// The navigation rail keeps the platform's own face, as Paneflow's does.
+pub const NAV_FONT: &str = ".SystemUIFont";
 
 /// Spacing scale, in logical pixels.
 pub mod space {
@@ -214,111 +249,112 @@ pub mod space {
     pub const XL: Pixels = px(24.0);
 }
 
-/// Minimum size of any pointer target, in logical pixels.
+/// Minimum size of a pointer target a row offers, in logical pixels.
 pub const TARGET_MIN: Pixels = px(40.0);
-/// Width of the fixed navigation rail.
-pub const RAIL_WIDTH: Pixels = px(196.0);
-/// Corner radius shared by controls and panels.
+
+/// Width of the navigation rail.
 ///
-/// Two pixels under [`CARD_RADIUS`], which is what keeps a rail entry or a
-/// panel reading as nested inside the card that holds it rather than as a
-/// second card of the same shape.
+/// Narrower than the 300 Paneflow's rail holds: its minimum window is 800 wide
+/// around a terminal grid, and this one is 920 around a column of cards that
+/// still has to fit a device row on one line.
+pub const RAIL_WIDTH: Pixels = px(220.0);
+/// Geometry of one navigation entry: Paneflow's sidebar row.
+pub const NAV_ROW_HEIGHT: Pixels = px(32.0);
+pub const NAV_ROW_MARGIN: Pixels = px(8.0);
+pub const NAV_ROW_PADDING_X: Pixels = px(7.0);
+pub const NAV_ROW_GAP: Pixels = px(2.0);
+pub const NAV_ROW_RADIUS: Pixels = px(9.0);
+pub const NAV_ICON_SIZE: Pixels = px(17.0);
+
+/// Inset of the main panel from the shell, on its right and bottom edges.
+pub const PANEL_INSET: Pixels = px(4.0);
+/// Corner radius of the main panel, the same curve as the window's.
+pub const PANEL_RADIUS: Pixels = px(10.0);
+
+/// Corner radius of a field: a select trigger, a color field.
 pub const RADIUS: Pixels = px(8.0);
-/// Corner radius of a device row.
-///
-/// One padding step outside [`RADIUS`], because that is what a row holds: a
-/// line of controls of [`RADIUS`] inset by [`space::XS`]. Concentric rather
-/// than equal, so the row does not read as a second control of the same shape.
-pub const ROW_RADIUS: Pixels = px(12.0);
-/// Corner radius of a card: the navigation rail, and the window itself.
-///
-/// One radius for both, as in Paneflow: a card inset from a window corner reads
-/// as concentric with it only while the two curves match.
-pub const CARD_RADIUS: Pixels = px(10.0);
-/// Gap between the window edge and a card, and between two cards.
-///
-/// Paneflow's `SIDEBAR_CARD_INSET`. Narrow on purpose: the card is read as a
-/// raised surface by its luminance and its radius, so the gap only has to keep
-/// the two curves from touching.
-pub const CARD_INSET: Pixels = px(4.0);
+/// Corner radius of a row, a button and a menu item: Paneflow's `ROW_RADIUS`,
+/// drawn as a continuous corner.
+pub const ROW_RADIUS: Pixels = px(14.0);
+/// Corner radius of a card: Paneflow's `SETTINGS_CARD_RADIUS`.
+pub const CARD_RADIUS: Pixels = px(20.0);
+/// Inset of the rows inside a card of rows, so a row of [`ROW_RADIUS`] sits
+/// concentric with the [`CARD_RADIUS`] around it.
+pub const CARD_ROW_INSET: Pixels = px(6.0);
+/// Padding of a card whose content is fields or prose.
+pub const CARD_PADDING_X: Pixels = px(16.0);
+pub const CARD_PADDING_Y: Pixels = px(14.0);
+/// Padding of one setting line: a title on the left, its control on the right.
+pub const SETTING_ROW_PADDING_X: Pixels = px(16.0);
+pub const SETTING_ROW_PADDING_Y: Pixels = px(10.0);
 /// Width of the visible focus ring, in logical pixels.
 pub const FOCUS_RING: Pixels = px(2.0);
+
+/// The reading column a screen is laid out in: Paneflow's Settings column.
+pub const COLUMN_MAX_WIDTH: Pixels = px(700.0);
+pub const COLUMN_PADDING: Pixels = px(28.0);
+/// Space between two blocks of a page, and under an eyebrow.
+pub const BLOCK_GAP: Pixels = px(24.0);
+pub const EYEBROW_GAP: Pixels = px(8.0);
 
 /// Height of one line of the device strip.
 ///
 /// The strip is provenance, not content: it names which hardware answered and
 /// in what state, above the readouts the screen is actually about. So the line
-/// is sized like a caption rather than like a row: tall enough that two of them
-/// do not touch, short enough that the pair costs less than a single metric
-/// tile. Deliberately far under [`TARGET_MIN`], which is a floor for things the
-/// pointer aims at and nothing on this strip is.
+/// is sized like a caption rather than like a row.
 pub const DEVICE_LINE_HEIGHT: Pixels = px(22.0);
 
 /// Height of a control pill: a select, a color field, a slider.
 ///
 /// One height for all three, so a row that carries two different controls has
-/// them on the same baseline. Set by the tallest thing one can hold, which is a
-/// [`SWATCH_SIZE`] swatch inside the padding and the reserved ring.
-pub const CONTROL_HEIGHT: Pixels = px(34.0);
+/// them on the same baseline: Paneflow's 10 by 6 select padding around a body
+/// line, plus the reserved focus ring.
+pub const CONTROL_HEIGHT: Pixels = px(32.0);
+/// Height of a button: Paneflow's `secondary_button`, 10 by 4 around a body
+/// line, plus the ring.
+pub const BUTTON_HEIGHT: Pixels = px(30.0);
+/// Width clamp of a select trigger.
+pub const SELECT_MIN_WIDTH: Pixels = px(190.0);
+pub const SELECT_MAX_WIDTH: Pixels = px(260.0);
 
 /// Side of a color swatch, and the radius that goes with it.
-///
-/// One size wherever a color is shown as a square: inside a color field and in
-/// the list that field opens. A swatch is a sample of a color rather than a
-/// control shaped like one, so the list matches the field it belongs to instead
-/// of growing to [`TARGET_MIN`].
-pub const SWATCH_SIZE: Pixels = px(22.0);
-pub const SWATCH_RADIUS: Pixels = px(4.0);
+pub const SWATCH_SIZE: Pixels = px(18.0);
+pub const SWATCH_RADIUS: Pixels = px(5.0);
 
-/// Geometry of a floating menu, taken from Paneflow's `select_menu`.
+/// Geometry of a floating menu, taken from Paneflow's `menu_panel`.
 ///
-/// A menu is not a card and not a control: it is its own object, so it carries
-/// its own radius rather than borrowing [`RADIUS`] or [`CARD_RADIUS`] and
-/// following whichever of them moves next. The width clamp is what keeps a menu
-/// from being as narrow as a short option or as wide as a long one.
-pub const MENU_RADIUS: Pixels = px(10.0);
+/// A 34-pixel row clamps its continuous corner to 11, and the 7 pixels of
+/// surface padding land it concentric inside the 18 of the menu.
+pub const MENU_RADIUS: Pixels = px(18.0);
+pub const MENU_PADDING: Pixels = px(7.0);
 pub const MENU_MIN_WIDTH: Pixels = px(200.0);
 pub const MENU_MAX_WIDTH: Pixels = px(280.0);
-pub const MENU_MAX_HEIGHT: Pixels = px(320.0);
-/// Side of the glyph on a menu trigger, smaller than a content icon.
-pub const MENU_GLYPH_SIZE: Pixels = px(12.0);
-/// Gap between the control a menu belongs to and the menu itself.
-///
-/// A menu flush against its trigger reads as part of the control rather than as
-/// a layer over it, and the two rounded edges meet in a line neither of them
-/// owns.
-pub const MENU_OFFSET: Pixels = px(6.0);
-/// Gap between two rows of a menu: a hairline, so the highlights of two
-/// neighbouring rows do not touch.
+pub const MENU_MAX_HEIGHT: Pixels = px(400.0);
+pub const MENU_ROW_HEIGHT: Pixels = px(34.0);
 pub const MENU_ROW_GAP: Pixels = px(1.0);
-/// Height of one menu row. Below [`TARGET_MIN`] on purpose, because that is the
-/// row height of the menus this one is matched to.
-pub const MENU_ROW_HEIGHT: Pixels = px(28.0);
+/// Side of the glyph on a menu trigger, and of the check on a chosen row.
+pub const MENU_GLYPH_SIZE: Pixels = px(12.0);
+pub const MENU_CHECK_SIZE: Pixels = px(13.0);
+/// Gap between the control a menu belongs to and the menu itself.
+pub const MENU_OFFSET: Pixels = px(6.0);
 
 /// Window size the layout is designed for.
 pub const WINDOW_WIDTH: Pixels = px(920.0);
 pub const WINDOW_HEIGHT: Pixels = px(640.0);
 
-/// Client-side window decoration geometry.
+/// Client-side window decoration geometry, Paneflow's title bar.
 ///
-/// The window draws its own caption bar and its own frame, so these sizes are
-/// what the compositor would otherwise decide. They are the ones Paneflow uses,
-/// which is what keeps the two windows reading as the same desktop chrome.
-///
-/// The bar itself is `1.75 * rem_size` and never shorter than this floor, so it
-/// grows with the interface scale instead of clipping its own controls.
-pub const TITLE_BAR_MIN_HEIGHT: Pixels = px(36.0);
+/// The bar is `1.75 * rem_size` and never shorter than this floor, so it grows
+/// with the interface scale instead of clipping its own controls.
+pub const TITLE_BAR_MIN_HEIGHT: Pixels = px(32.0);
 /// Side of one window control button.
 pub const TITLE_BAR_CONTROL: Pixels = px(20.0);
 /// Gap between two window control buttons.
-pub const TITLE_BAR_CONTROL_GAP: Pixels = px(6.0);
+pub const TITLE_BAR_CONTROL_GAP: Pixels = px(12.0);
 /// Inset between the window edge and the control group.
-///
-/// Narrower than the 8 pixels Paneflow keeps: the card underneath already holds
-/// its own [`CARD_INSET`] off the window, and the two insets stack.
-pub const TITLE_BAR_INSET: Pixels = px(6.0);
+pub const TITLE_BAR_INSET: Pixels = px(8.0);
 /// Corner radius of the window itself, dropped edge by edge when tiled.
-pub const WINDOW_RADIUS: Pixels = CARD_RADIUS;
+pub const WINDOW_RADIUS: Pixels = px(10.0);
 /// Border the decorated surface draws around itself.
 pub const WINDOW_BORDER: Pixels = px(1.0);
 /// Invisible band around the window that starts a resize.
@@ -340,11 +376,13 @@ pub const DEGREE_C: &str = " \u{00b0}C";
 
 /// Font for numeric readouts.
 ///
-/// A fixed-advance family plus `tnum` keeps digit width constant, so a value
-/// changing from `9` to `10` cannot shift the label next to it.
+/// The interface face with tabular figures, as Paneflow sets its diffstats:
+/// digit width stays constant, so a value changing from `9` to `10` cannot
+/// shift the label next to it, and the number still reads as the same type as
+/// the word beside it.
 pub fn numeric_font() -> Font {
     Font {
-        family: "monospace".into(),
+        family: UI_FONT.into(),
         features: FontFeatures(Arc::new(vec![("tnum".into(), 1), ("lnum".into(), 1)])),
         fallbacks: None,
         weight: FontWeight::MEDIUM,
@@ -362,9 +400,20 @@ mod tests {
     /// WCAG AA for interface components and their states.
     const NON_TEXT_MIN: f32 = 3.0;
 
+    /// Composite a wash of [`TEXT`] over an opaque surface, as the renderer
+    /// does, so a translucent highlight can be measured like a token.
+    fn washed(surface: Color, alpha: f32) -> Color {
+        let mix = |shift: u32| {
+            let over = ((TEXT.0 >> shift) & 0xff) as f32;
+            let under = ((surface.0 >> shift) & 0xff) as f32;
+            (over * alpha + under * (1.0 - alpha)).round() as u32
+        };
+        Color::rgb((mix(16) << 16) | (mix(8) << 8) | mix(0))
+    }
+
     #[test]
     fn body_text_meets_aa_on_every_surface() {
-        for surface in [RAIL, SURFACE, PANEL, CONTROL, MENU] {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL, CONTROL_HOVER, MENU] {
             let ratio = TEXT.contrast(surface);
             assert!(ratio >= TEXT_MIN, "TEXT on {surface:?} is {ratio:.2}:1");
         }
@@ -372,7 +421,7 @@ mod tests {
 
     #[test]
     fn muted_text_meets_aa_on_every_surface() {
-        for surface in [RAIL, SURFACE, PANEL, CONTROL, MENU] {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL, CONTROL_HOVER, MENU] {
             let ratio = TEXT_MUTED.contrast(surface);
             assert!(
                 ratio >= TEXT_MIN,
@@ -381,17 +430,70 @@ mod tests {
         }
     }
 
+    /// The washes are where a row's own text sits while it is lit, so they are
+    /// held to the same bar as the surfaces under them.
     #[test]
-    fn text_on_the_accent_meets_aa_in_every_interaction_state() {
-        for state in [ACCENT, ACCENT_HOVER, ACCENT_ACTIVE] {
-            let ratio = TEXT_ON_ACCENT.contrast(state);
-            assert!(ratio >= TEXT_MIN, "on-accent text is {ratio:.2}:1");
+    fn text_stays_legible_on_every_wash() {
+        for (surface, alpha) in [
+            (RAIL, NAV_HOVER),
+            (RAIL, NAV_ACTIVE),
+            (PANEL, WASH_HOVER),
+            (PANEL, WASH_SELECTED),
+            (MENU, WASH_HOVER),
+            (MENU, WASH_SELECTED),
+        ] {
+            let lit = washed(surface, alpha);
+            let ratio = TEXT.contrast(lit);
+            assert!(
+                ratio >= TEXT_MIN,
+                "TEXT on {surface:?} washed at {alpha} is {ratio:.2}:1"
+            );
+        }
+        // Muted text rides on the rail entries and on the rows of a card, never
+        // on a menu item, which carries one label in the full text color.
+        for (surface, alpha) in [
+            (RAIL, NAV_HOVER),
+            (RAIL, NAV_ACTIVE),
+            (PANEL, WASH_HOVER),
+            (PANEL, WASH_SELECTED),
+        ] {
+            let ratio = TEXT_MUTED.contrast(washed(surface, alpha));
+            assert!(
+                ratio >= TEXT_MIN,
+                "TEXT_MUTED on {surface:?} washed at {alpha} is {ratio:.2}:1"
+            );
         }
     }
 
     #[test]
-    fn the_accent_itself_is_distinguishable_from_the_surface() {
-        assert!(ACCENT.contrast(SURFACE) >= NON_TEXT_MIN);
+    fn white_on_a_solid_action_meets_aa_in_every_interaction_state() {
+        for state in [SOLID, SOLID_HOVER] {
+            let ratio = TEXT_ON_SOLID.contrast(state);
+            assert!(ratio >= TEXT_MIN, "on-solid text is {ratio:.2}:1");
+        }
+        // Against the surfaces it is laid on, so the button is a shape before
+        // it is a label. Resting only: the darker fill exists while the pointer
+        // is on top of the button, which has already been found by then, and
+        // it lands at 2.96:1 on a card.
+        for surface in [SURFACE, PANEL] {
+            let ratio = SOLID.contrast(surface);
+            assert!(
+                ratio >= NON_TEXT_MIN,
+                "SOLID on {surface:?} is {ratio:.2}:1"
+            );
+        }
+        assert!(SOLID_HOVER.luminance() < SOLID.luminance());
+    }
+
+    #[test]
+    fn the_accent_is_distinguishable_from_every_surface_it_draws_on() {
+        for surface in [SURFACE, PANEL, TRACK] {
+            let ratio = ACCENT.contrast(surface);
+            assert!(
+                ratio >= NON_TEXT_MIN,
+                "ACCENT on {surface:?} is {ratio:.2}:1"
+            );
+        }
     }
 
     /// The glyph a device row draws over an operator's color.
@@ -426,30 +528,14 @@ mod tests {
     /// The alternative is a deep maroon that no longer reads as a warning, and a
     /// destructive control that does not read as one is the worse failure.
     ///
-    /// So the bar here is the 3:1 one, checked in every interaction state, and
-    /// the label is never the only thing carrying the meaning: the button says
-    /// "Delete profile" in words and asks a second time before it acts.
-    ///
-    /// Measured, so the tradeoff is auditable rather than asserted:
-    ///
-    /// | fill | white on it | on SURFACE | on PANEL |
-    /// |---|---|---|---|
-    /// | `DESTRUCTIVE` | 3.41:1 | 5.21:1 | 4.72:1 |
-    /// | `DESTRUCTIVE_HOVER` | 4.07:1 | 4.36:1 | 3.95:1 |
-    /// | `DESTRUCTIVE_ACTIVE` | 5.35:1 | 3.32:1 | 3.01:1 |
+    /// So the bar here is the 3:1 one, checked in both states, and the label is
+    /// never the only thing carrying the meaning: the button says "Delete
+    /// profile" in words and asks a second time before it acts.
     #[test]
     fn the_destructive_button_stays_legible_in_every_interaction_state() {
-        for state in [DESTRUCTIVE, DESTRUCTIVE_HOVER, DESTRUCTIVE_ACTIVE] {
+        for state in [DESTRUCTIVE, DESTRUCTIVE_HOVER] {
             let ratio = TEXT_ON_DESTRUCTIVE.contrast(state);
             assert!(ratio >= NON_TEXT_MIN, "on-destructive text is {ratio:.2}:1");
-        }
-
-        // Against the surfaces it is laid on, so the button is a shape before
-        // it is a label. Resting and hovered only: the pressed fill exists for
-        // as long as a button is held, with the pointer on top of it, and
-        // holding a momentary state to the bar that says "this component can be
-        // found on the page" would price the press feedback out of existing.
-        for state in [DESTRUCTIVE, DESTRUCTIVE_HOVER] {
             for surface in [SURFACE, PANEL] {
                 let ratio = state.contrast(surface);
                 assert!(
@@ -458,22 +544,30 @@ mod tests {
                 );
             }
         }
-
-        // Pressing deepens the fill rather than lifting it, which is the
-        // opposite of what the accent does and the reason the label survives:
-        // a lifted red would take its own white under 3:1.
         assert!(DESTRUCTIVE_HOVER.luminance() < DESTRUCTIVE.luminance());
-        assert!(DESTRUCTIVE_ACTIVE.luminance() < DESTRUCTIVE_HOVER.luminance());
-        assert!(
-            TEXT_ON_DESTRUCTIVE.contrast(DESTRUCTIVE_ACTIVE)
-                > TEXT_ON_DESTRUCTIVE.contrast(DESTRUCTIVE)
-        );
 
         // The fill and the word a failure is named in are separate tokens on
         // purpose. Collapsing them would put a body-text red behind white, or
         // a saturated red on a panel as text, and each fails its own bar.
         assert_ne!(DESTRUCTIVE, DANGER);
         assert!(DANGER.contrast(PANEL) >= TEXT_MIN);
+    }
+
+    #[test]
+    fn every_chart_series_is_a_visible_mark_on_the_card() {
+        for series in [
+            SERIES_CPU,
+            SERIES_GPU,
+            SERIES_COOLANT,
+            SERIES_PUMP,
+            SERIES_FAN,
+        ] {
+            let ratio = series.contrast(PANEL);
+            assert!(ratio >= NON_TEXT_MIN, "{series:?} on PANEL is {ratio:.2}:1");
+        }
+        // Gridlines recede: visible, and nowhere near a mark.
+        let grid = GRID.contrast(PANEL);
+        assert!((1.05..1.5).contains(&grid), "grid is {grid:.2}:1");
     }
 
     #[test]
@@ -486,7 +580,7 @@ mod tests {
 
     #[test]
     fn the_focus_ring_is_visible_against_every_background_it_sits_on() {
-        for surface in [RAIL, SURFACE, PANEL, CONTROL, MENU, ACCENT] {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL, MENU] {
             let ratio = FOCUS.contrast(surface);
             assert!(
                 ratio >= NON_TEXT_MIN,
@@ -505,15 +599,18 @@ mod tests {
     fn how_much_of_a_track_is_filled_is_visible_without_reading_the_value() {
         // The one thing a slider says at a glance is where the fill stops, so
         // the boundary between the filled part and the empty one is a
-        // meaningful non-text element and takes the full 3:1. The handle rides
-        // on the filled side and is held to the same bar against it.
-        let ratio = ACCENT.contrast(RAIL);
+        // meaningful non-text element and takes the full 3:1. The knob carries
+        // a ring of the shell color, and that ring is what has to clear the
+        // fill it rides on.
+        let ratio = SWITCH.contrast(TRACK);
         assert!(ratio >= NON_TEXT_MIN, "fill against track is {ratio:.2}:1");
-        let handle = TEXT.contrast(ACCENT);
+        let ring = RAIL.contrast(SWITCH);
         assert!(
-            handle >= NON_TEXT_MIN,
-            "handle against fill is {handle:.2}:1"
+            ring >= NON_TEXT_MIN,
+            "knob ring against fill is {ring:.2}:1"
         );
+        let knob = TEXT_ON_SOLID.contrast(TRACK);
+        assert!(knob >= NON_TEXT_MIN, "knob against track is {knob:.2}:1");
     }
 
     #[test]
@@ -534,6 +631,15 @@ mod tests {
     }
 
     #[test]
+    fn the_panel_reads_as_a_card_on_the_shell_without_a_shadow() {
+        // Paneflow's ramp: the shell is the darkest surface, the main panel
+        // one step up, a card one more. The order is the whole depth model.
+        assert!(SURFACE.luminance() > RAIL.luminance());
+        assert!(PANEL.luminance() > SURFACE.luminance());
+        assert!(CONTROL.luminance() > PANEL.luminance());
+    }
+
+    #[test]
     fn separators_stay_low_contrast_without_disappearing() {
         let ratio = SEPARATOR.contrast(SURFACE);
         assert!((1.1..2.5).contains(&ratio), "separator is {ratio:.2}:1");
@@ -549,8 +655,24 @@ mod tests {
     }
 
     #[test]
-    fn pointer_targets_are_at_least_forty_logical_pixels() {
+    fn pointer_targets_clear_the_wcag_minimum() {
+        // WCAG 2.2 asks 24 for a target; a row keeps 40 and a nav entry
+        // Paneflow's 32.
         assert!(TARGET_MIN >= px(40.0));
+        assert!(NAV_ROW_HEIGHT >= px(24.0));
+        assert!(BUTTON_HEIGHT >= px(24.0));
+    }
+
+    #[test]
+    fn a_menu_row_sits_concentric_inside_its_menu() {
+        // The continuous corner clamps to a third of the row height, so the
+        // radius a row actually paints is that clamp, and the padding is what
+        // separates it from the menu's own curve.
+        let painted = (f32::from(MENU_ROW_HEIGHT) / 3.0).min(f32::from(ROW_RADIUS));
+        let menu = painted + f32::from(MENU_PADDING) - f32::from(MENU_RADIUS);
+        assert!(menu.abs() < 1.0, "menu rows are {menu} off concentric");
+        let card = f32::from(ROW_RADIUS) + f32::from(CARD_ROW_INSET) - f32::from(CARD_RADIUS);
+        assert!(card.abs() < 0.5, "card rows are {card} off concentric");
     }
 
     #[test]

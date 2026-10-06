@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The application shell: a fixed navigation rail and one work surface.
+//! The application shell: Paneflow's cockpit frame around one work surface.
 //!
-//! Four primary destinations, one secondary Settings entry, and nothing else.
-//! The rail never scrolls and never changes width, so the work surface has a
-//! known width to lay out against at the 920x640 target size.
+//! A title bar across the whole window, a navigation rail on the shell color
+//! under it, and the main panel inset beside the rail as a rounded card. Three
+//! primary destinations, one secondary Settings entry, and nothing else. The
+//! rail never scrolls and never changes width, so the panel has a known width
+//! to lay out against at the 920x640 target size.
 //!
 //! The window holds no hardware handle. It repaints when the worker publishes a
 //! new snapshot, and every write control is gated on what the daemon reported.
@@ -20,15 +22,15 @@
 use std::time::Instant;
 
 use gpui::{
-    App, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels, SharedString,
-    Stateful, Window, actions, div, prelude::*,
+    App, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, SharedString, Stateful,
+    Window, actions, div, prelude::*, px,
 };
 use kori_core::profile::CoolingProgram;
 use kori_core::telemetry::KrakenTelemetry;
 
 use crate::assets::Icon;
 use crate::components::{
-    ICON_SIZE, Note, NoteLevel, focus_ring, focus_visible, icon, set_focus_visible,
+    Note, NoteLevel, focus_ring, focus_visible, icon, set_focus_visible, squircle,
 };
 use crate::cooling::CoolingEditor;
 use crate::display::DisplayScreen;
@@ -40,7 +42,11 @@ use crate::shell::screen::drag::{Drag, Interaction};
 use crate::shell::screen::row::LightingRow;
 use crate::shell::screen::write::{WriteSchedule, WriteTarget, write_is_held_back};
 use crate::shell::screen::{Disclosure, Popover};
-use crate::theme::{CARD_INSET, CARD_RADIUS, RADIUS, RAIL_WIDTH, TARGET_MIN, color, space};
+use crate::theme::{
+    BLOCK_GAP, COLUMN_MAX_WIDTH, COLUMN_PADDING, FOCUS_RING, NAV_FONT, NAV_ICON_SIZE, NAV_ROW_GAP,
+    NAV_ROW_HEIGHT, NAV_ROW_MARGIN, NAV_ROW_PADDING_X, NAV_ROW_RADIUS, PANEL_INSET, PANEL_RADIUS,
+    RAIL_WIDTH, UI_FONT, color, space, text,
+};
 use crate::window_chrome::{self, DragLatch};
 
 pub mod screen;
@@ -370,23 +376,18 @@ impl Shell {
         }
     }
 
-    /// The navigation rail, as a card inset from the window it sits in.
+    /// The navigation rail: Paneflow's Settings navigation.
     ///
-    /// Paneflow's shape: the window's caption buttons at the top of the column,
-    /// the destinations below them, and the utility entry pinned to a footer.
+    /// No card and no divider. The rail is part of the shell, painted in the
+    /// shell color, and the main panel beside it is what is raised: the frame
+    /// recedes and the content is the thing laid on top. The destinations run
+    /// down from the title bar and the utility entry is pinned to a footer,
+    /// set apart by the empty space above it.
+    ///
     /// Nothing names the product here. The window title carries the name, the
     /// Settings screen carries the qualifier, and a heading repeating either one
     /// would only push the first destination down the column.
-    ///
-    /// The card is a surface above the window's own, so the two separate by
-    /// luminance rather than by a drawn divider, and it is inset far enough on
-    /// every side that no corner of it has to know how the window is rounding
-    /// its own.
-    ///
-    /// `reserved_top` is the strip the title bar is laid over. The card runs
-    /// under it and starts its own content below, which is what puts the caption
-    /// buttons inside the card rather than in a bar above it.
-    fn rail(&self, reserved_top: Pixels, cx: &mut Context<Self>) -> Div {
+    fn rail(&self, cx: &mut Context<Self>) -> Div {
         let current = self.destination;
         // A `map` closure would have to hold the mutable context borrow across
         // calls, which the 2024 edition's capture rules reject. A plain loop
@@ -402,34 +403,23 @@ impl Shell {
             .flex_none()
             .w(RAIL_WIDTH)
             .h_full()
-            .bg(color::SURFACE.hsla())
-            .rounded(CARD_RADIUS)
-            // No outline: the card is told apart from the window by its
-            // luminance, which is how Paneflow separates its own surfaces.
-            .overflow_hidden()
-            .pt(reserved_top)
+            .font_family(NAV_FONT)
+            .text_size(text::NAV)
+            .line_height(text::NAV_LINE)
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(space::XS)
-                    // The same inset the card keeps from the window, so an entry
-                    // and the caption buttons above it sit on one edge.
-                    .px(CARD_INSET)
-                    .pt(CARD_INSET)
+                    .gap(NAV_ROW_GAP)
+                    .pt(space::XS)
                     .children(primary_entries),
             )
             .child(div().flex_1())
-            .child(
-                // No divider either: the empty space above it is what sets the
-                // utility entry apart from the destinations.
-                div()
-                    .flex()
-                    .flex_col()
-                    .px(CARD_INSET)
-                    .pb(CARD_INSET)
-                    .child(self.rail_entry(Destination::Settings, current, cx)),
-            )
+            .child(div().flex().flex_col().pb(px(9.5)).child(self.rail_entry(
+                Destination::Settings,
+                current,
+                cx,
+            )))
     }
 
     /// Returns a concrete element rather than `impl IntoElement`.
@@ -437,6 +427,13 @@ impl Shell {
     /// Under the 2024 edition an opaque return type captures every input
     /// lifetime, so an `impl IntoElement` here would keep borrowing the context
     /// and only one entry could be built at a time.
+    ///
+    /// Paneflow's sidebar row: 32 tall, a continuous corner of 9, a muted glyph
+    /// and the label in the full text color. The destination the operator is
+    /// standing in takes the active wash and every other one the hover wash
+    /// under the pointer: the same material as a lit row anywhere else, never a
+    /// colored fill. The glyph and the wash are what mark it, so selection is
+    /// not carried by color alone either.
     fn rail_entry(
         &self,
         destination: Destination,
@@ -444,55 +441,39 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let selected = destination == current;
-        // The label color, which the icon takes too: an entry whose glyph and
-        // word disagreed would read as a word with a decoration beside it.
-        let ink = if selected {
-            color::TEXT_ON_ACCENT.hsla()
-        } else {
-            color::TEXT.hsla()
-        };
-        // A menu row's fills, with one exception. Where a menu marks its current
-        // value with a whisper, because choosing there has not happened yet, the
-        // rail marks the destination the operator is standing in and takes the
-        // accent for it. Everything else is the menu's: no fill at rest, and a
-        // 5% wash under the pointer rather than a grey block.
-        let resting = if selected {
-            color::ACCENT.hsla()
-        } else {
-            color::TEXT.alpha(0.0)
-        };
-        let hovered = if selected {
-            color::ACCENT_HOVER.hsla()
-        } else {
-            color::TEXT.alpha(0.05)
-        };
+        let label = destination.label();
 
         focus_ring(
-            div()
-                .id(SharedString::from(destination.label()))
-                .tab_index(destination.tab_index())
-                .tab_stop(true)
-                .flex()
-                .items_center()
-                .gap(space::SM)
-                .w_full()
-                // The menu row's padding, but not its height: a menu row is 28
-                // tall because it is one of a list the pointer is already
-                // inside, and a rail entry is a target the pointer travels to,
-                // so it keeps the floor every pointer target in this interface
-                // keeps.
-                .min_h(TARGET_MIN)
-                .p(space::SM)
-                .rounded(RADIUS)
-                .cursor_pointer()
-                .text_xs()
-                .text_color(ink),
+            squircle::skin(
+                div().id(SharedString::from(label)),
+                SharedString::from(format!("rail-{label}")),
+                NAV_ROW_RADIUS,
+                selected.then(|| color::TEXT.alpha(color::NAV_ACTIVE)),
+                (!selected).then(|| color::TEXT.alpha(color::NAV_HOVER)),
+            )
+            .tab_index(destination.tab_index())
+            .tab_stop(true)
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(space::SM)
+            .mx(NAV_ROW_MARGIN)
+            .min_h(NAV_ROW_HEIGHT)
+            // The ring is reserved inside the row's own padding, so focusing
+            // an entry moves nothing.
+            .px(NAV_ROW_PADDING_X - FOCUS_RING)
+            .py(px(6.0) - FOCUS_RING)
+            .rounded(NAV_ROW_RADIUS)
+            .cursor_pointer()
+            .text_color(color::TEXT.hsla()),
             true,
         )
-        .bg(resting)
-        .hover(|this| this.bg(hovered))
-        .child(icon(destination.icon(), ICON_SIZE, ink))
-        .child(destination.label())
+        .child(
+            icon(destination.icon(), NAV_ICON_SIZE, color::TEXT_MUTED.hsla())
+                .relative()
+                .flex_none(),
+        )
+        .child(div().relative().flex_1().min_w_0().truncate().child(label))
         .on_click(cx.listener(move |this, _, _, cx| this.go(destination, cx)))
     }
 
@@ -566,17 +547,13 @@ impl Render for Shell {
         self.interaction.clear_tracks();
 
         let content = match self.destination {
-            Destination::Monitoring => self.monitoring(),
+            Destination::Monitoring => self.monitoring(cx),
             Destination::Cooling => self.cooling(cx),
             Destination::Lighting => self.lighting(cx),
             Destination::Settings => self.settings(),
         };
 
         let title_bar = window_chrome::title_bar(window, &self.window_drag);
-        // The bar is laid over the top of the window, so everything under it
-        // starts below the strip it occupies. The card and the work surface
-        // already begin one gap down, which is that much less to reserve.
-        let reserved_top = window_chrome::title_bar_height(window) - CARD_INSET;
 
         let shell = div()
             .id("shell")
@@ -649,58 +626,68 @@ impl Render for Shell {
             )
             .size_full()
             .flex()
-            // The gap and the padding are what make the rail read as a card
-            // laid on the window rather than as a column cut out of it.
-            .gap(CARD_INSET)
-            .p(CARD_INSET)
+            .flex_col()
+            // Paneflow sets its face on the root element and every surface
+            // inherits it; only the rail asks for the platform's own.
+            .font_family(UI_FONT)
+            .text_size(text::BODY)
             .text_color(color::TEXT.hsla())
-            .text_sm()
-            .child(self.rail(reserved_top, cx))
+            // The title bar is a row of its own, across the whole window, so
+            // every pixel of it above the rail and the panel is a place to
+            // drag the window from.
+            .child(title_bar)
             .child(
                 div()
-                    .flex_1()
-                    // Without this the rail plus an unwrapped sentence can
-                    // exceed the window width instead of wrapping.
-                    .min_w_0()
-                    .h_full()
                     .flex()
-                    .flex_col()
-                    // The caption strip carries nothing on this side, and the
-                    // band is reserved anyway: it is the window's own bar, so
-                    // it stays a place to drag the window from rather than a
-                    // place a heading can reach. Rigid and outside the scroll,
-                    // as Paneflow reserves it, so a scrolled screen passes
-                    // under nothing.
-                    .child(div().flex_none().h(reserved_top))
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.rail(cx))
                     .child(
+                        // The main panel: the inset card the screens are laid
+                        // on, lighter than the shell around it, which is what
+                        // makes it read as a card without a shadow. Inset on
+                        // the right and the bottom only, as Paneflow's is
+                        // while its sidebar is shown: the rail is the inset
+                        // on the left.
                         div()
-                            .id("work-surface")
                             .flex_1()
-                            // A flex child floors at its content height unless
-                            // it is told it may shrink, which is what turns the
-                            // overflow below into a scroll instead of a spill.
-                            .min_h_0()
-                            // No fill: the window's own surface is the ground
-                            // the panels and the rail card sit on.
-                            .overflow_y_scroll()
-                            // One gap of its own on top of the row's, so a
-                            // screen keeps a little more air than the rail card
-                            // takes.
-                            .px(space::SM)
-                            .pb(space::SM)
-                            .flex()
-                            .flex_col()
-                            .gap(space::LG)
-                            .children(self.banner())
-                            .child(content),
+                            // Without this the rail plus an unwrapped sentence
+                            // can exceed the window width instead of wrapping.
+                            .min_w_0()
+                            .h_full()
+                            .pr(PANEL_INSET)
+                            .pb(PANEL_INSET)
+                            .child(
+                                div()
+                                    .id("work-surface")
+                                    .size_full()
+                                    .rounded(PANEL_RADIUS)
+                                    .bg(color::SURFACE.hsla())
+                                    .overflow_y_scroll()
+                                    .child(
+                                        // Paneflow's Settings column: centered,
+                                        // capped, and padded so the corners of
+                                        // the panel never reach a card.
+                                        div()
+                                            .w_full()
+                                            .max_w(COLUMN_MAX_WIDTH)
+                                            .mx_auto()
+                                            .px(COLUMN_PADDING)
+                                            .pt(COLUMN_PADDING)
+                                            .pb(px(72.0))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(BLOCK_GAP)
+                                            .children(self.banner())
+                                            .child(content),
+                                    ),
+                            ),
                     ),
             );
 
-        // The chrome color fills the window, so the transparent title bar, the
-        // work surface and all four corners read as one ground. The bar is laid
-        // over the shell rather than stacked above it: that is what puts the
-        // caption buttons inside the rail card while every pixel across the top
-        // of the window stays a place to drag it from.
+        // The shell color fills the window, so the title bar, the rail and all
+        // four corners read as one ground and only the panel is raised off it.
         window_chrome::window_shell(
             div()
                 .relative()
@@ -731,8 +718,7 @@ impl Render for Shell {
                                 cx.notify();
                             }),
                         )
-                }))
-                .child(div().absolute().top_0().left_0().w_full().child(title_bar)),
+                })),
             window,
             color::RAIL.hsla(),
         )

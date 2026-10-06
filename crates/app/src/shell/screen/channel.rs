@@ -27,7 +27,7 @@ use kori_core::telemetry::{MetricView, PwmMode, SafetyAlert};
 use crate::components::{ControlState, CurveEditor, Slider, chevron};
 use crate::cooling::CoolingMode;
 use crate::shell::Shell;
-use crate::theme::{META_SEPARATOR, color, numeric_font, space};
+use crate::theme::{META_SEPARATOR, color, numeric_font, space, text};
 
 use super::row::{ROW_DETAIL_INDENT, row_hover_fill, row_shell, row_target};
 use super::tab::{COOLING_OFFSET_CURVE, COOLING_OFFSET_DUTY, cooling_row_tab};
@@ -56,7 +56,7 @@ fn readback(label: &'static str, view: &MetricView<f32>, format: impl Fn(f32) ->
         .gap(space::XS)
         .child(
             div()
-                .text_sm()
+                .text_size(text::LABEL_SM)
                 .text_color(color::TEXT_MUTED.hsla())
                 .child(label),
         )
@@ -72,7 +72,7 @@ fn readback(label: &'static str, view: &MetricView<f32>, format: impl Fn(f32) ->
         )
         .children(qualifier.map(|qualifier| {
             div()
-                .text_sm()
+                .text_size(text::LABEL_SM)
                 .text_color(color::WARNING.hsla())
                 .child(qualifier)
         }))
@@ -151,13 +151,14 @@ impl Shell {
                         .gap(px(1.0))
                         .child(
                             div()
+                                .text_size(text::BODY_EMPHASIS)
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(color::TEXT.hsla())
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child(channel.label()),
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(text::LABEL_SM)
                                 .text_color(color::TEXT_MUTED.hsla())
                                 .child(reported_program(mode, confirmed_percent)),
                         ),
@@ -190,7 +191,7 @@ impl Shell {
                 .children(alerts.into_iter().map(|alert| {
                     div()
                         .flex_none()
-                        .text_sm()
+                        .text_size(text::LABEL_SM)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(color::DANGER.hsla())
                         .child(match alert {
@@ -312,7 +313,7 @@ impl Shell {
                 // width it needs to be aimed at.
                 div()
                     .font(numeric_font())
-                    .text_xs()
+                    .text_size(text::LABEL_SM)
                     .text_color(color::TEXT_MUTED.hsla())
                     .child(format!(
                         "{target}/{MAX_DUTY} {META_SEPARATOR} accepted {floor} to \
@@ -352,7 +353,7 @@ impl Shell {
             .gap(space::SM)
             .children(refusal.map(|reason| {
                 div()
-                    .text_sm()
+                    .text_size(text::LABEL_SM)
                     .text_color(color::TEXT_MUTED.hsla())
                     .child(reason)
             }))

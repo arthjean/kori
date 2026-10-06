@@ -21,7 +21,7 @@ use crate::components::{Button, ButtonVariant, ControlState, Note, NoteLevel, Se
 use crate::display::{DisplayColorField, DisplayEditor};
 use crate::feed::Command;
 use crate::shell::Shell;
-use crate::theme::{color, space};
+use crate::theme::{color, space, text};
 
 use super::row::ROW_DETAIL_INDENT;
 use super::row::{LightingRow, RowLine, RowNote, row_thumbnail};
@@ -251,14 +251,14 @@ impl Shell {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .text_xs()
+                                    .text_size(text::LABEL_SM)
                                     .text_color(color::WARNING.hsla())
                                     .child(format!("The panel stopped updating: {reason}")),
                             )
                     }))
                     .children(frame.message().map(|reason| {
                         div()
-                            .text_xs()
+                            .text_size(text::LABEL_SM)
                             .text_color(color::WARNING.hsla())
                             .child(reason.to_string())
                     })),
@@ -336,7 +336,7 @@ impl Shell {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_xs()
+                    .text_size(text::LABEL_SM)
                     .text_color(color::TEXT_MUTED.hsla())
                     .truncate()
                     .child(note),

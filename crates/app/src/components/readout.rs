@@ -1,16 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The readouts: what a device is, and what one metric currently says.
+//! The readout of what a device is and how far it can be trusted.
 //!
 //! Nothing here is operable. Each of them states a value and how much it can be
 //! trusted, and states the second in a word rather than in a color alone.
 
-use gpui::{Div, Hsla, SharedString, div, prelude::*, px};
+use gpui::{Div, Hsla, SharedString, div, prelude::*};
 
-use kori_core::telemetry::MetricView;
-
-use crate::theme::{DEVICE_LINE_HEIGHT, META_SEPARATOR, color, numeric_font, space};
+use crate::theme::{DEVICE_LINE_HEIGHT, META_SEPARATOR, color, numeric_font, space, text};
 
 /// How a device presents in a [`DeviceRow`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +81,7 @@ impl DeviceRow {
     /// screen that block outweighed the readouts under it: a card, a heading, a
     /// sentence of policy and four lines of prose, all of it answering a
     /// question the operator asks once a session. Provenance is a caption, so it
-    /// is set like one. The whole line is [`text_xs`](Div::text_xs) and hierarchy
+    /// is set like one. The whole line is body size and hierarchy
     /// is carried by color alone: the name in ink, the identity muted, the state
     /// in its own color at the far right.
     ///
@@ -111,7 +109,7 @@ impl DeviceRow {
             .min_w_0()
             .min_h(DEVICE_LINE_HEIGHT)
             .gap(space::SM)
-            .text_xs()
+            .text_size(text::BODY)
             .child(
                 div()
                     .flex_none()
@@ -158,164 +156,9 @@ impl DeviceRow {
     }
 }
 
-/// A numeric readout with its unit, freshness and one dominant bar.
-///
-/// The qualifier is a word, not a color: "Stale" and "N/A" are what carry the
-/// meaning, and the color only reinforces them.
-pub struct Metric {
-    label: SharedString,
-    value: Option<String>,
-    unit: SharedString,
-    qualifier: Option<&'static str>,
-    detail: Option<String>,
-    fraction: Option<f32>,
-    stale: bool,
-}
-
-impl Metric {
-    /// Build from a formatted value, or `None` when there is nothing to show.
-    ///
-    /// Private, with [`Metric::from_view`] the only way in from a screen: a
-    /// value and a freshness assembled separately is a pair a caller can get
-    /// wrong, and every readout in this interface comes from a view.
-    fn new(label: impl Into<SharedString>, value: Option<String>) -> Self {
-        Self {
-            label: label.into(),
-            value,
-            unit: SharedString::default(),
-            qualifier: None,
-            detail: None,
-            fraction: None,
-            stale: false,
-        }
-    }
-
-    /// Build straight from a metric view, taking its value and its freshness.
-    pub fn from_view(
-        label: impl Into<SharedString>,
-        view: &MetricView<f32>,
-        format: impl Fn(f32) -> String,
-    ) -> Self {
-        let mut metric = Self::new(label, view.copied().map(format))
-            .qualifier(view.qualifier())
-            .detail(view.detail().map(str::to_string));
-        // Taken from the view rather than inferred from the qualifier string:
-        // freshness is a state, not a label to parse back.
-        metric.stale = view.is_stale();
-        debug_assert_eq!(metric.value.is_none(), view.is_unavailable());
-        metric
-    }
-
-    pub fn unit(mut self, unit: impl Into<SharedString>) -> Self {
-        self.unit = unit.into();
-        self
-    }
-
-    fn qualifier(mut self, qualifier: Option<&'static str>) -> Self {
-        self.qualifier = qualifier;
-        self
-    }
-
-    fn detail(mut self, detail: Option<String>) -> Self {
-        self.detail = detail;
-        self
-    }
-
-    /// Add the section's dominant bar, as a fraction of full scale.
-    pub fn bar(mut self, fraction: Option<f32>) -> Self {
-        self.fraction = fraction.map(|value| value.clamp(0.0, 1.0));
-        self
-    }
-
-    /// The number as shown, using an explicit marker rather than a zero.
-    pub fn readout(&self) -> String {
-        match &self.value {
-            Some(value) => format!("{value}{}", self.unit),
-            None => "--".to_string(),
-        }
-    }
-
-    pub fn render(self) -> Div {
-        let readout = self.readout();
-        let available = self.value.is_some();
-        let fill = if !available {
-            color::TEXT_DISABLED.hsla()
-        } else if self.stale {
-            color::WARNING.hsla()
-        } else {
-            color::ACCENT.hsla()
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            // Shares the row with its siblings so the bar spans the width it
-            // is given: a dominant bar per section is the point, and a bar
-            // sized to the width of its label is not one.
-            .flex_1()
-            .min_w(px(150.0))
-            .gap(space::XS)
-            .child(
-                div()
-                    .flex()
-                    .items_baseline()
-                    .justify_between()
-                    .gap(space::SM)
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(color::TEXT_MUTED.hsla())
-                            .child(self.label),
-                    )
-                    .children(self.qualifier.map(|qualifier| {
-                        div()
-                            .flex_none()
-                            .text_sm()
-                            .text_color(if available {
-                                color::WARNING.hsla()
-                            } else {
-                                color::TEXT_DISABLED.hsla()
-                            })
-                            .child(qualifier)
-                    })),
-            )
-            .child(
-                div()
-                    .font(numeric_font())
-                    .text_color(if available {
-                        color::TEXT.hsla()
-                    } else {
-                        color::TEXT_DISABLED.hsla()
-                    })
-                    .child(readout),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .h(px(6.0))
-                    .rounded(px(3.0))
-                    .bg(color::SEPARATOR.hsla())
-                    .child(
-                        div()
-                            .h_full()
-                            .w(gpui::relative(self.fraction.unwrap_or(0.0)))
-                            .rounded(px(3.0))
-                            .bg(fill),
-                    ),
-            )
-            .children(self.detail.map(|detail| {
-                div()
-                    .text_sm()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child(detail)
-            }))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::DEGREE_C;
 
     #[test]
     fn device_health_is_named_in_words_and_never_by_color_alone() {
@@ -336,34 +179,5 @@ mod tests {
             labels.len(),
             "two states share a word: {labels:?}"
         );
-    }
-
-    #[test]
-    fn a_metric_without_a_value_reads_as_unavailable_not_as_zero() {
-        let missing: MetricView<f32> = MetricView::Unavailable { cause: None };
-        let unavailable =
-            Metric::from_view("GPU", &missing, |value| format!("{value:.1}")).unit(DEGREE_C);
-        assert_eq!(unavailable.readout(), "--");
-
-        let reading = MetricView::Fresh { value: 51.0 };
-        let present =
-            Metric::from_view("GPU", &reading, |value| format!("{value:.1}")).unit(DEGREE_C);
-        assert_eq!(present.readout(), "51.0 \u{00b0}C");
-    }
-
-    #[test]
-    fn a_metric_takes_its_qualifier_from_the_view_it_was_built_from() {
-        let stale = MetricView::Stale {
-            value: 46.8,
-            age_ms: 3_000,
-        };
-        let metric = Metric::from_view("CPU", &stale, |value| format!("{value:.1}"));
-        assert_eq!(metric.qualifier, Some("Stale"));
-        assert_eq!(metric.readout(), "46.8");
-
-        let missing: MetricView<f32> = MetricView::Unavailable { cause: None };
-        let metric = Metric::from_view("CPU", &missing, |value| format!("{value:.1}"));
-        assert_eq!(metric.qualifier, Some("N/A"));
-        assert_eq!(metric.readout(), "--");
     }
 }

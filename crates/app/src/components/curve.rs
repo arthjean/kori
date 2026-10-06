@@ -19,7 +19,7 @@ use kori_core::profile::{
     CURVE_NODE_COUNT, CurveNodes, MAX_DUTY_PERCENT, duty_from_percent, duty_to_percent,
 };
 
-use crate::theme::{DEGREE_C, META_SEPARATOR, RADIUS, color, numeric_font, space};
+use crate::theme::{DEGREE_C, META_SEPARATOR, RADIUS, color, numeric_font, space, text};
 
 use super::{ControlState, focus_ring, stroke_line};
 
@@ -211,7 +211,7 @@ fn curve_caption(nodes: &CurveNodes, selected: usize, liquid_c: Option<f32>) -> 
         .gap(space::SM)
         .w_full()
         .min_w_0()
-        .text_xs()
+        .text_size(text::LABEL_SM)
         .font(numeric_font())
         .child(div().flex_none().text_color(color::TEXT.hsla()).child(node))
         .children(coolant.map(|coolant| {
@@ -238,7 +238,7 @@ fn duty_axis(height: Pixels) -> Div {
         .children(["100%", "75%", "50%", "25%", "0%"].map(|label| {
             div()
                 .font(numeric_font())
-                .text_xs()
+                .text_size(text::LABEL_SM)
                 .text_color(color::TEXT_MUTED.hsla())
                 .child(label)
         }))
@@ -255,7 +255,7 @@ fn temperature_axis() -> Div {
         .children((0..CURVE_NODE_COUNT).map(|index| {
             div()
                 .font(numeric_font())
-                .text_xs()
+                .text_size(text::LABEL_SM)
                 .text_color(color::TEXT_MUTED.hsla())
                 .child(format!("{:.0}", CurveNodes::temperature_at(index)))
         }))

@@ -22,17 +22,20 @@ use gpui::{
 };
 
 use crate::assets::Icon;
-use crate::theme::{CONTROL_HEIGHT, Color, FOCUS_RING, MENU_GLYPH_SIZE, RADIUS, color, space};
+use crate::theme::{
+    CARD_PADDING_X, CARD_PADDING_Y, CARD_RADIUS, CARD_ROW_INSET, CONTROL_HEIGHT, Color,
+    EYEBROW_GAP, FOCUS_RING, MENU_GLYPH_SIZE, RADIUS, color, space, text,
+};
 
-mod chart;
+pub mod chart;
 mod control;
 mod curve;
 mod readout;
+pub mod squircle;
 
-pub use chart::Sparkline;
 pub use control::{Button, ColorField, Select, SelectOption, Slider, parse_hex_color};
 pub use curve::{CurveEditor, node_at};
-pub use readout::{DeviceHealth, DeviceRow, Metric};
+pub use readout::{DeviceHealth, DeviceRow};
 
 /// What a control is allowed to do right now.
 ///
@@ -168,10 +171,11 @@ where
 /// The pill every value control is built on, matched to Paneflow's
 /// `select_trigger`.
 ///
-/// A subtle-gray pill with no outline, 10 by 6 of padding, and a fill that
-/// sinks rather than lifts under the pointer. The focus ring is taken out of
-/// that padding rather than added to it, so reserving the ring leaves the pill
-/// exactly the size of the one it matches and focusing it moves nothing.
+/// A subtle-gray pill with no outline, 10 by 6 of padding, a radius of 8, and
+/// a fill that lifts 6% toward the text color under the pointer. The focus
+/// ring is taken out of that padding rather than added to it, so reserving the
+/// ring leaves the pill exactly the size of the one it matches and focusing it
+/// moves nothing.
 ///
 /// Shared by the select, the color field and the slider rather than copied into
 /// each: they sit on the same lines as each other, and a pill that is a pixel
@@ -213,15 +217,15 @@ fn pill(
         .justify_between()
         .gap(space::SM)
         .min_h(CONTROL_HEIGHT)
-        .px(space::SM)
-        .py(space::XS)
+        .px(px(10.0) - FOCUS_RING)
+        .py(px(6.0) - FOCUS_RING)
         .rounded(RADIUS)
         .bg(if filled {
             color::CONTROL.hsla()
         } else {
             color::CONTROL.alpha(0.0)
         })
-        .text_xs()
+        .text_size(text::BODY)
         .text_color(state.text_color());
 
     // The reserved ring, plus the one state that keeps an outline at rest: a
@@ -242,7 +246,6 @@ fn pill(
             // thing about what is under the pointer.
             .when(filled, |this| {
                 this.hover(|this| this.bg(color::CONTROL_HOVER.hsla()))
-                    .active(|this| this.bg(color::ACCENT_ACTIVE.alpha(0.35)))
             })
     } else {
         // A disabled control is not a tab stop: keyboard traversal must not
@@ -251,45 +254,51 @@ fn pill(
     }
 }
 
-/// A titled section of the work surface.
-pub struct Panel {
-    title: SharedString,
-    subtitle: Option<SharedString>,
+/// The heading of a block: a 13-pixel title and an 11-pixel description.
+///
+/// Paneflow's `section_title`, two pixels in from the card edge so the letters
+/// line up with the curve of the corner below them rather than with its box.
+pub fn section_title(title: impl Into<SharedString>, description: Option<SharedString>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .px(px(2.0))
+        .pb(EYEBROW_GAP)
+        .child(
+            div()
+                .text_size(text::BODY_EMPHASIS)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(color::TEXT.hsla())
+                .child(title.into()),
+        )
+        .children(description.map(|description| {
+            div()
+                .text_size(text::LABEL_SM)
+                .text_color(color::TEXT_MUTED.hsla())
+                .child(description)
+        }))
 }
 
-impl Panel {
-    pub fn new(title: impl Into<SharedString>) -> Self {
-        Self {
-            title: title.into(),
-            subtitle: None,
-        }
-    }
+/// The label over a block that needs no description: Paneflow's
+/// `section_header`, 11 pixels in the muted color.
+pub fn eyebrow(label: impl Into<SharedString>) -> Div {
+    div()
+        .px(px(2.0))
+        .pb(EYEBROW_GAP)
+        .text_size(text::LABEL_SM)
+        .text_color(color::TEXT_MUTED.hsla())
+        .child(label.into())
+}
 
-    pub fn subtitle(mut self, subtitle: impl Into<SharedString>) -> Self {
-        self.subtitle = Some(subtitle.into());
-        self
-    }
-
-    pub fn render(self) -> Div {
-        panel_surface().child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(space::XS)
-                .child(
-                    div()
-                        .text_color(color::TEXT.hsla())
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(self.title),
-                )
-                .children(self.subtitle.map(|subtitle| {
-                    div()
-                        .text_sm()
-                        .text_color(color::TEXT_MUTED.hsla())
-                        .child(subtitle)
-                })),
-        )
-    }
+/// The line between two settings in one card: the border color at half, as
+/// Paneflow's `hairline`.
+pub fn hairline() -> Div {
+    div()
+        .flex_none()
+        .h(px(1.0))
+        .w_full()
+        .bg(color::SEPARATOR.alpha(0.5))
 }
 
 /// Side of an icon drawn inline with text, in logical pixels.
@@ -314,7 +323,7 @@ pub fn icon(icon: Icon, size: Pixels, color: Hsla) -> Svg {
 /// rather than beside it in the same weight.
 pub fn select_chevron() -> Svg {
     icon(
-        Icon::ChevronDown,
+        Icon::Selector,
         MENU_GLYPH_SIZE,
         color::TEXT_MUTED.alpha(0.7),
     )
@@ -331,33 +340,33 @@ pub fn chevron(open: bool, color: Hsla) -> Svg {
     icon(name, ICON_SIZE, color).flex_none()
 }
 
-/// The raised surface a [`Panel`] draws on, without its heading.
+/// The card a block draws on, without its heading.
 ///
-/// Shared rather than duplicated so a section that carries no title still sits
-/// on exactly the same surface as every titled one. It carries no outline: a
-/// card is told apart from the ground under it by its luminance, and the panel
-/// fill already clears the work surface it sits on.
+/// Paneflow's `setting_card`: the card role under a continuous corner of 20,
+/// no outline and no shadow. A card is told apart from the panel under it by
+/// its luminance, which is how every surface of the shell separates.
+///
+/// The fill is the first child, so whatever the caller adds paints over it.
 pub fn panel_surface() -> Div {
     div()
+        .relative()
         .flex()
         .flex_col()
         .w_full()
         .min_w_0()
         .gap(space::MD)
-        .p(space::LG)
-        .rounded(RADIUS)
-        .bg(color::PANEL.hsla())
+        .px(CARD_PADDING_X)
+        .py(CARD_PADDING_Y)
+        .child(squircle::fill(CARD_RADIUS, color::PANEL.hsla()))
 }
 
-/// The same surface, for a card whose content is a list of openable rows.
+/// The same card, for content that is a list of rows or of settings.
 ///
-/// One padding step instead of [`panel_surface`]'s four. A row is not a
-/// paragraph: it carries its own inset, its own hover fill and its own corner,
-/// so a card that also holds it at arm's length stacks three insets between the
-/// edge of the card and the control the operator aimed at. A card of prose or
-/// of fields keeps the wider step, because nothing inside those pads itself.
+/// The rows carry their own inset, their own highlight and their own corner,
+/// so the card only keeps the few pixels that make a row's corner concentric
+/// with its own.
 pub fn row_panel() -> Div {
-    panel_surface().p(space::SM)
+    panel_surface().p(CARD_ROW_INSET).gap(px(2.0))
 }
 
 /// How urgent a [`Note`] is.
@@ -401,18 +410,22 @@ impl Note {
         }
     }
 
+    /// Paneflow's callout: the card surface, a one-pixel edge in the severity
+    /// color, a radius of 8, and the severity spelled out ahead of the message.
     pub fn render(self) -> Div {
         let accent = self.level.color();
         div()
             .flex()
             .w_full()
             .min_w_0()
-            .gap(space::SM)
-            .p(space::MD)
+            .gap(px(10.0))
+            .px(space::LG)
+            .py(space::MD)
             .rounded(RADIUS)
-            .bg(accent.alpha(0.12))
+            .bg(color::PANEL.hsla())
             .border_1()
-            .border_color(accent.alpha(0.5))
+            .border_color(accent.hsla())
+            .text_size(text::BODY)
             .child(
                 div()
                     .flex_none()
@@ -459,12 +472,17 @@ fn field(
         .gap(space::XS)
         .children(label.map(|label| {
             div()
-                .text_sm()
+                .text_size(text::LABEL_SM)
                 .text_color(color::TEXT_MUTED.hsla())
                 .child(label)
         }))
         .child(control)
-        .children(message.map(|message| div().text_sm().text_color(message_color).child(message)))
+        .children(message.map(|message| {
+            div()
+                .text_size(text::LABEL_SM)
+                .text_color(message_color)
+                .child(message)
+        }))
 }
 
 fn stroke_line(

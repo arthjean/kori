@@ -20,7 +20,7 @@ use gpui::{Div, Pixels, SharedString, Stateful, div, prelude::*, px};
 use crate::assets::Icon;
 use crate::components::{ControlState, Slider, chevron, focus_ring, icon};
 use crate::shell::Shell;
-use crate::theme::{Color, META_SEPARATOR, RADIUS, ROW_RADIUS, TARGET_MIN, color, space};
+use crate::theme::{Color, META_SEPARATOR, RADIUS, ROW_RADIUS, TARGET_MIN, color, space, text};
 use gpui::{Context, Hsla};
 
 use super::tab::ROW_OFFSET_BRIGHTNESS;
@@ -102,22 +102,23 @@ pub const ROW_HEAD_MIN_WIDTH: Pixels = px(180.0);
 /// chevron reads as another row rather than as the inside of this one.
 pub const ROW_DETAIL_INDENT: Pixels = px(32.0);
 /// Side of the appearance thumbnail at the head of a device row.
-pub const ROW_THUMBNAIL: Pixels = px(34.0);
+pub const ROW_THUMBNAIL: Pixels = px(28.0);
 /// Side of the glyph drawn inside that thumbnail.
 ///
 /// Larger than [`crate::components::ICON_SIZE`], which is the size of a glyph
 /// sitting beside text. This one sits inside a filled tile and has to survive
 /// the fill around it, so it takes a little under two thirds of the side,
 /// leaving a margin of the color on every edge.
-pub const ROW_THUMBNAIL_GLYPH: Pixels = px(20.0);
+pub const ROW_THUMBNAIL_GLYPH: Pixels = px(16.0);
 
 /// The fill of the line under the pointer.
 ///
 /// A function rather than a constant on each screen: both lists light their
 /// whole line, and they differ in what the line holds rather than in how it
-/// reads under the pointer.
+/// reads under the pointer. Paneflow's hover wash, the same material as a lit
+/// menu item.
 pub(crate) fn row_hover_fill() -> Hsla {
-    color::CONTROL.alpha(0.5)
+    color::TEXT.alpha(color::WASH_HOVER)
 }
 
 /// The container one openable row sits in: its open state, and the gap between
@@ -134,12 +135,11 @@ pub(crate) fn row_shell(open: bool) -> Div {
         .flex_col()
         .w_full()
         .min_w_0()
-        .p(space::XS)
         // Between the line and what it opened. Only ever applies when a detail
         // is there, since a closed row has a single child.
         .gap(space::SM)
         .rounded(ROW_RADIUS)
-        .when(open, |this| this.bg(color::CONTROL.alpha(0.25)))
+        .when(open, |this| this.bg(color::TEXT.alpha(color::WASH_HOVER)))
 }
 
 /// The region of a row that opens it: a pointer target with a reserved ring.
@@ -157,7 +157,7 @@ pub(crate) fn row_target(id: SharedString, tab_index: isize) -> Stateful<Div> {
             .gap(space::SM)
             .min_h(TARGET_MIN)
             .px(space::SM)
-            .rounded(RADIUS)
+            .rounded(ROW_RADIUS)
             .cursor_pointer()
             .tab_index(tab_index)
             .tab_stop(true),
@@ -230,7 +230,7 @@ impl Shell {
                     // padding on the left, and the last control would otherwise
                     // sit flush against the edge of the highlight.
                     .pr(space::SM)
-                    .rounded(RADIUS)
+                    .rounded(ROW_RADIUS)
                     // The whole line lights up, not just the part that opens
                     // it: the controls on the right belong to this device, and
                     // a highlight that stops before them reads as two rows.
@@ -301,8 +301,9 @@ impl Shell {
                         .child(
                             div()
                                 .truncate()
+                                .text_size(text::BODY_EMPHASIS)
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(color::TEXT.hsla())
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child(title),
                         )
                         // The fragment gives up the width first: the name
@@ -315,7 +316,7 @@ impl Shell {
                                 .flex_none()
                                 .items_baseline()
                                 .gap(space::SM)
-                                .text_xs()
+                                .text_size(text::LABEL_SM)
                                 .child(
                                     div()
                                         .text_color(color::TEXT_DISABLED.hsla())
@@ -327,7 +328,7 @@ impl Shell {
                 .children(sentence.map(|sentence| {
                     div()
                         .truncate()
-                        .text_sm()
+                        .text_size(text::LABEL_SM)
                         .text_color(color::TEXT_MUTED.hsla())
                         .child(sentence)
                 })),

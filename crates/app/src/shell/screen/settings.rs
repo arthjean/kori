@@ -9,12 +9,12 @@
 
 use gpui::{Div, div, prelude::*};
 
-use crate::components::{Button, ControlState, Panel};
+use crate::components::{Button, ControlState, eyebrow, section_title};
 use crate::shell::Shell;
-use crate::theme::{META_SEPARATOR, UNOFFICIAL_NOTICE, color};
+use crate::theme::{META_SEPARATOR, UNOFFICIAL_NOTICE, color, text};
 
 use super::tab::SCREEN_TAB_BASE;
-use super::{screen, setting_row};
+use super::{block, screen, setting_card, setting_line, setting_row};
 
 impl Shell {
     pub(crate) fn settings(&self) -> Div {
@@ -43,50 +43,58 @@ impl Shell {
             None => "no telemetry".to_string(),
         };
 
-        let mut panel = Panel::new("Service")
-            .render()
-            .child(setting_row("Socket", socket))
-            .child(setting_row("Daemon version", version))
-            .child(setting_row("Configuration", config))
-            .child(setting_row("Sampling", sampling))
-            .child(setting_row(
+        let mut service = vec![
+            setting_row("Socket", socket),
+            setting_row("Daemon version", version),
+            setting_row("Configuration", config),
+            setting_row("Sampling", sampling),
+            setting_row(
                 "Network",
                 "No network request, no listening TCP or UDP socket.".to_string(),
-            ));
-
+            ),
+        ];
         for failure in self.link.failed_collectors() {
-            panel = panel.child(setting_row(
+            service.push(setting_row(
                 format!("{} collector", failure.collector.label()),
                 failure.detail.clone(),
             ));
         }
 
+        let export = Button::new("export-diagnostics", "Export")
+            .tab_index(SCREEN_TAB_BASE)
+            .state(if self.link.status().is_some() {
+                ControlState::Enabled
+            } else {
+                ControlState::disabled("The background service is not running.")
+            });
+        // The refusal is the description while there is one: a disabled
+        // button whose reason sits somewhere else is a button that says no
+        // without saying why.
+        let export_note = export.state_message().unwrap_or_else(|| {
+            "Serial numbers are redacted before anything leaves this machine.".into()
+        });
+
         screen("Settings", "Local paths, versions and diagnostics.")
-            .child(panel)
-            .child(
-                Panel::new("Devices")
-                    .subtitle("Only the two allowlisted devices are ever opened.")
-                    .render()
-                    .children(self.device_settings()),
-            )
-            .child(
-                Panel::new("Diagnostics")
-                    .subtitle("Serial numbers are redacted before anything leaves this machine.")
-                    .render()
-                    .child(
-                        Button::new("export-diagnostics", "Export diagnostics")
-                            .tab_index(SCREEN_TAB_BASE)
-                            .state(if self.link.status().is_some() {
-                                ControlState::Enabled
-                            } else {
-                                ControlState::disabled("The background service is not running.")
-                            })
-                            .render(),
-                    ),
-            )
+            .child(block(eyebrow("Service"), setting_card(service)))
+            .child(block(
+                section_title(
+                    "Devices",
+                    Some("Only the two allowlisted devices are ever opened.".into()),
+                ),
+                setting_card(self.device_settings()),
+            ))
+            .child(block(
+                eyebrow("Diagnostics"),
+                setting_card([setting_line(
+                    "Export diagnostics",
+                    Some(export_note),
+                    export.render(),
+                )]),
+            ))
             .child(
                 div()
-                    .text_sm()
+                    .px(gpui::px(2.0))
+                    .text_size(text::LABEL_SM)
                     .text_color(color::TEXT_MUTED.hsla())
                     .child(UNOFFICIAL_NOTICE),
             )

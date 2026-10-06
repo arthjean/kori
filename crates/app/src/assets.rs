@@ -28,6 +28,10 @@ use gpui::{AssetSource, SharedString};
 pub enum Icon {
     ChevronDown,
     ChevronRight,
+    /// The mark on the chosen row of a menu.
+    Check,
+    /// The up-and-down chevron at the right edge of a select trigger.
+    Selector,
     /// Monitoring, in the rail.
     ChartLine,
     /// Cooling, in the rail.
@@ -58,9 +62,11 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 15] = [
+    pub const ALL: [Icon; 17] = [
         Self::ChevronDown,
         Self::ChevronRight,
+        Self::Check,
+        Self::Selector,
         Self::ChartLine,
         Self::Snowflake,
         Self::Bulb,
@@ -81,6 +87,8 @@ impl Icon {
         match self {
             Self::ChevronDown => "icons/chevron-down.svg",
             Self::ChevronRight => "icons/chevron-right.svg",
+            Self::Check => "icons/check.svg",
+            Self::Selector => "icons/selector.svg",
             Self::ChartLine => "icons/chart-line.svg",
             Self::Snowflake => "icons/snowflake.svg",
             Self::Bulb => "icons/bulb.svg",
@@ -113,6 +121,14 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "icons/chevron-right.svg",
         include_bytes!("../assets/icons/chevron-right.svg"),
+    ),
+    (
+        "icons/check.svg",
+        include_bytes!("../assets/icons/check.svg"),
+    ),
+    (
+        "icons/selector.svg",
+        include_bytes!("../assets/icons/selector.svg"),
     ),
     (
         "icons/chart-line.svg",
@@ -164,6 +180,24 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/window/close.svg"),
     ),
 ];
+
+/// The interface face, Geist, in the three weights the interface sets.
+///
+/// Compiled in for the same reason the icons are, and handed to the text system
+/// rather than to [`Assets`]: GPUI resolves a family by name from the fonts it
+/// was given, not from a path. OFL 1.1, recorded in `REUSE.toml`, and taken
+/// byte-identical from the copies Paneflow bundles.
+pub const FONTS: [&[u8]; 3] = [
+    include_bytes!("../assets/fonts/Geist-Regular.ttf"),
+    include_bytes!("../assets/fonts/Geist-Medium.ttf"),
+    include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
+];
+
+/// Register [`FONTS`] with the window's text system.
+pub fn load_fonts(cx: &gpui::App) -> Result<()> {
+    cx.text_system()
+        .add_fonts(FONTS.iter().map(|bytes| Cow::Borrowed(*bytes)).collect())
+}
 
 /// The application's compiled-in asset source.
 pub struct Assets;
