@@ -63,6 +63,12 @@ impl ClientError {
     }
 }
 
+/// How long a read or a write on the socket may block before it fails.
+///
+/// What [`Client::connect`] uses, and what a caller that has no reason to pick
+/// another value should use too.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A connected client that has completed the version handshake.
 pub struct Client {
     reader: BufReader<UnixStream>,
@@ -71,8 +77,18 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect and handshake.
+    /// Connect and handshake, with [`DEFAULT_TIMEOUT`] on every read and write.
     pub fn connect(path: &Path) -> Result<Self, ClientError> {
+        Self::connect_with_timeout(path, DEFAULT_TIMEOUT)
+    }
+
+    /// Connect and handshake, failing any read or write that blocks longer
+    /// than `timeout`.
+    ///
+    /// The bound applies to each operation, the handshake included, not to the
+    /// conversation as a whole. A zero duration is refused by the kernel and
+    /// reported as an unreachable socket rather than silently meaning "forever".
+    pub fn connect_with_timeout(path: &Path, timeout: Duration) -> Result<Self, ClientError> {
         let unreachable = |source| ClientError::Unreachable {
             path: path.display().to_string(),
             source,
@@ -83,7 +99,7 @@ impl Client {
         // failure is reported rather than discarded: a connection whose
         // timeouts were refused does not carry that guarantee, and a caller
         // handed one anyway would wait on it without end.
-        let timeout = Some(Duration::from_secs(5));
+        let timeout = Some(timeout);
         stream.set_read_timeout(timeout).map_err(unreachable)?;
         stream.set_write_timeout(timeout).map_err(unreachable)?;
 
@@ -124,6 +140,31 @@ impl Client {
     pub fn request(&mut self, request: Request) -> Result<Response, ClientError> {
         write_frame(&mut self.writer, &request).map_err(ClientError::from_write)?;
         read_frame(&mut self.reader).map_err(ClientError::Disconnected)
+    }
+
+    /// Send a request frame the caller assembled, and take the one response
+    /// shape it accepts.
+    ///
+    /// For a client that carries a payload it does not interpret, such as a
+    /// command line handing on what an operator typed. The payload is not
+    /// decoded into [`Request`] on this side, so the daemon is the one place an
+    /// unknown field or an out-of-range value is judged, and its typed refusal
+    /// reaches the caller unchanged. The answer is still decoded and checked
+    /// against `expected`, so a reply of the wrong kind is reported as such.
+    pub fn forward(
+        &mut self,
+        frame: &serde_json::Value,
+        expected: &'static str,
+    ) -> Result<Response, ClientError> {
+        write_frame(&mut self.writer, frame).map_err(ClientError::from_write)?;
+        match read_frame(&mut self.reader).map_err(ClientError::Disconnected)? {
+            Response::Error(error) => Err(ClientError::Refused(error)),
+            response if response.kind() == expected => Ok(response),
+            other => Err(ClientError::Unexpected {
+                expected,
+                actual: other.kind(),
+            }),
+        }
     }
 
     /// Send one request and take the single response shape it accepts.
@@ -214,6 +255,68 @@ impl Client {
             "shown",
             |response| match response {
                 Response::Shown(outcome) => Some(*outcome),
+                _ => None,
+            },
+        )
+    }
+
+    /// Store a profile, replacing one with the same name. Answers the name the
+    /// daemon stored it under.
+    pub fn save_profile(
+        &mut self,
+        profile: crate::profile::Profile,
+    ) -> Result<String, ClientError> {
+        self.expect(
+            Request::SaveProfile { profile },
+            "saved",
+            |response| match response {
+                Response::Saved { name } => Some(name),
+                _ => None,
+            },
+        )
+    }
+
+    /// Make a stored profile active and read what the hardware did.
+    pub fn activate_profile(
+        &mut self,
+        name: String,
+    ) -> Result<crate::ipc::ActivationOutcome, ClientError> {
+        self.expect(
+            Request::ActivateProfile { name },
+            "activated",
+            |response| match response {
+                Response::Activated(outcome) => Some(outcome),
+                _ => None,
+            },
+        )
+    }
+
+    /// Remove a stored profile. Answers the removed name and, when it was the
+    /// active one, the profile the daemon activated in its place.
+    pub fn delete_profile(
+        &mut self,
+        name: String,
+    ) -> Result<(String, Option<String>), ClientError> {
+        self.expect(
+            Request::DeleteProfile { name },
+            "deleted",
+            |response| match response {
+                Response::Deleted {
+                    name,
+                    activated_instead,
+                } => Some((name, activated_instead)),
+                _ => None,
+            },
+        )
+    }
+
+    /// The redacted diagnostics export.
+    pub fn diagnostics(&mut self) -> Result<crate::diagnostics::DiagnosticsExport, ClientError> {
+        self.expect(
+            Request::Diagnostics,
+            "diagnostics",
+            |response| match response {
+                Response::Diagnostics(export) => Some(export),
                 _ => None,
             },
         )

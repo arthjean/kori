@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use kori_core::client::{Client, ClientError};
 use kori_core::display::DisplayPreset;
-use kori_core::ipc::{ApplyOutcome, HardwareState, LightingOutcome, Request, Response};
+use kori_core::ipc::{ApplyOutcome, HardwareState, LightingOutcome};
 use kori_core::lighting::LightingCommand;
 use kori_core::profile::{CoolingProgram, Profile};
 
@@ -531,18 +531,13 @@ fn execute(session: &mut Session, command: Command) -> Report {
         },
         Command::SaveProfile(profile) => {
             let name = profile.name.clone();
-            request(session, Request::SaveProfile { profile }, |response| {
-                let Response::Saved { .. } = response else {
-                    return None;
-                };
-                Some(Report::confirmed(format!("Profile {name} saved.")))
-            })
+            match session.client.save_profile(profile) {
+                Ok(_) => Report::confirmed(format!("Profile {name} saved.")),
+                Err(error) => refused(error),
+            }
         }
-        Command::ActivateProfile(name) => {
-            request(session, Request::ActivateProfile { name }, |response| {
-                let Response::Activated(activation) = response else {
-                    return None;
-                };
+        Command::ActivateProfile(name) => match session.client.activate_profile(name) {
+            Ok(activation) => {
                 let mut report = match &activation.applied {
                     Some(applied) => Report::from_apply(applied),
                     None => Report::from_hardware(
@@ -554,47 +549,31 @@ fn execute(session: &mut Session, command: Command) -> Report {
                 // subject: which of several stored arrangements ran is the
                 // whole content of the message, not the device it reached.
                 report.message = format!("{}: {}", activation.name, report.message);
-                Some(report)
-            })
-        }
-        Command::DeleteProfile(name) => {
-            request(session, Request::DeleteProfile { name }, |response| {
-                let Response::Deleted {
-                    name,
-                    activated_instead,
-                } = response
-                else {
-                    return None;
-                };
-                Some(Report::confirmed(match activated_instead {
-                    Some(safe) => format!("{safe} activated before {name} was deleted."),
-                    None => format!("Profile {name} deleted."),
-                }))
-            })
-        }
+                report
+            }
+            Err(error) => refused(error),
+        },
+        Command::DeleteProfile(name) => match session.client.delete_profile(name) {
+            Ok((name, activated_instead)) => Report::confirmed(match activated_instead {
+                Some(safe) => format!("{safe} activated before {name} was deleted."),
+                None => format!("Profile {name} deleted."),
+            }),
+            Err(error) => refused(error),
+        },
     }
 }
 
-/// Send one request and read the answer it was sent for.
+/// How a profile command that did not succeed is reported.
 ///
-/// `describe` returns `None` for any response that is not the one this request
-/// asks for, which is the only thing the three profile commands did differently.
-/// They each repeated the refusal, the unexpected answer and the transport
-/// failure verbatim, so a new failure mode had three places to be handled two
-/// ways.
-fn request(
-    session: &mut Session,
-    request: Request,
-    describe: impl FnOnce(Response) -> Option<Report>,
-) -> Report {
-    match session.client.request(request) {
-        Ok(Response::Error(error)) => Report::refused(error.to_string()),
-        Ok(response) => describe(response).unwrap_or_else(|| {
-            Report::refused(
-                "The background service answered something this build does not understand.",
-            )
-        }),
-        Err(error) => Report::refused(error.to_string()),
+/// An answer of the wrong kind keeps the sentence the window has always shown
+/// for it: the wording `ClientError` uses names wire tags, which is right for a
+/// command line and means nothing to an operator reading a status line.
+fn refused(error: ClientError) -> Report {
+    match error {
+        ClientError::Unexpected { .. } => Report::refused(
+            "The background service answered something this build does not understand.",
+        ),
+        other => Report::refused(other.to_string()),
     }
 }
 
