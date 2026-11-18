@@ -63,12 +63,18 @@ with the package manager reporting success throughout.
    own while the set is wrong, and the result is a software centre listing a
    version the binary does not carry.
 2. Run the four validation commands from `AGENTS.md`.
-3. Try the packaging without publishing anything: run the **Release** workflow
+3. Build the release binaries (`cargo build --release`), start the `korid` they
+   produced on the machine that holds the hardware, close any window and any
+   `korictl watch`, and run `scripts/budgets.sh`. It exits non-zero when a
+   budget is exceeded; commit its output in `docs/from-source.md` under
+   "Measured footprint". CI measures only `korictl`, because a runner has no
+   display and no Kraken.
+4. Try the packaging without publishing anything: run the **Release** workflow
    from the Actions tab. It builds, packages, signs, installs, and checks the
    credential the publication uses, skipping only the one call that creates the
    release, and leaves the artifacts on the run. What a rehearsal cannot cover
    is one API call; everything it needs to succeed has already run.
-4. Tag and push:
+5. Tag and push:
 
    ```bash
    git tag -a v0.1.0 -m "kori 0.1.0"
@@ -77,7 +83,7 @@ with the package manager reporting success throughout.
 
    The workflow builds, packages, signs and publishes the release against that
    tag.
-5. Update the AUR package, below.
+6. Update the AUR package, below.
 
 ## Verification a user can run
 

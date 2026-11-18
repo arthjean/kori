@@ -4,7 +4,9 @@
 # The four validation commands from AGENTS.md, plus the three checks a
 # distribution rejects a package for: a licence in the dependency graph that a
 # GPL-3.0-or-later work cannot absorb, a desktop entry or AppStream component a
-# software centre will not index, and a source file with no copyright.
+# software centre will not index, and a source file with no copyright. The
+# footprint budgets that need no display (korictl's size and latency) are
+# measured by scripts/budgets.sh in the `budgets` job.
 #
 # Third-party actions are pinned to a commit rather than a tag, because a tag is
 # rewritable by whoever owns it and this workflow reads the whole repository.
@@ -86,6 +88,52 @@ jobs:
 
       - run: cargo +1.90 check --workspace --all-targets
 
+  budgets:
+    name: korictl size and latency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the libraries the graph links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential pkg-config \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          key: release
+
+      # The budgets are for release builds, and kori is left out: the runner has
+      # no display and no GPU, and a software renderer would measure a
+      # different process.
+      - run: cargo build --release -p kori-daemon --bin korid -p kori-cli --bin korictl
+
+      # A daemon on an empty sysfs tree: no device is found, so nothing is
+      # opened, and korictl telemetry is answered by the same code that answers
+      # it on a machine. The runtime directory is short because a Unix socket
+      # path is limited to 107 bytes.
+      - name: Measure korictl against a daemon on a fake tree
+        run: |
+          export KORI_SYSFS_ROOT="$RUNNER_TEMP/sys" KORI_USBFS_ROOT="$RUNNER_TEMP/usb"
+          export KORI_RUNTIME_DIR="$RUNNER_TEMP/run" KORI_CONFIG_DIR="$RUNNER_TEMP/config"
+          export KORI_SOCKET="$KORI_RUNTIME_DIR/korid.sock"
+          mkdir -p "$KORI_SYSFS_ROOT" "$KORI_USBFS_ROOT" "$KORI_CONFIG_DIR"
+          mkdir -m 0700 -p "$KORI_RUNTIME_DIR"
+          target/release/korid &
+          for _ in $(seq 100); do
+            target/release/korictl status >/dev/null 2>&1 && break
+            sleep 0.1
+          done
+          status=0
+          scripts/budgets.sh --only korictl --bin-dir target/release || status=$?
+          kill %1
+          exit "$status"
+
   licences:
     name: dependency licences and advisories
     runs-on: ubuntu-latest
@@ -130,7 +178,8 @@ jobs:
           done
 
       # The development launcher stops and restarts the user service; a syntax
-      # error there leaves a contributor's daemon stopped.
+      # error there leaves a contributor's daemon stopped. The budget script is
+      # among them, and the part of it that needs no display runs in `budgets`.
       - name: Parse the development scripts
         run: |
           for script in scripts/*.sh; do

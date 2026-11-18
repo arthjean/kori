@@ -69,7 +69,9 @@ cargo test --workspace
   distribution would reject a package over: `cargo deny check` for a licence in
   the graph a GPL-3.0-or-later work cannot absorb, `reuse lint` for a file with
   no copyright, and `desktop-file-validate` plus `appstreamcli validate` for
-  metadata a software centre reads.
+  metadata a software centre reads. Its `budgets` job runs
+  `scripts/budgets.sh --only korictl` against a daemon on an empty sysfs tree;
+  the full script, window included, is a release step (`docs/releasing.md`).
 - The toolchain is pinned to 1.97.1 in `rust-toolchain.toml`. The declared MSRV
   is 1.90 in `[workspace.package]`, and CI checks the claim with
   `cargo +1.90 check`. Changing either is a deliberate decision, not a side

@@ -265,17 +265,129 @@ centre reads.
 
 ## Measured footprint
 
-| Measurement | Observed | Budget |
-|---|---|---|
-| Cold start, median over 5 launches | 327 ms | ≤ 700 ms |
-| `RssAnon` at idle, memory allocated by the process | 81.3 MiB | ≤ 110 MiB |
-| Total `VmRSS` at idle | 253.2 MiB | ≤ 320 MiB |
-| CPU at idle, 5 min average | 1.10% | ≤ 1.5% |
+Every budget is measured by one command, which prints one JSON document and
+exits non-zero when a measured budget is exceeded:
 
-Measured on the machine above. Total `VmRSS` is dominated by the graphics driver
-and shader compiler mappings linked in by GPUI, shared with the other GPU
-clients on the machine: an empty GPUI window accounts for 288.1 MiB of it. This
-is a non-regression ceiling, not an optimization target. The metric the project
+```bash
+cargo build --release
+scripts/budgets.sh
+```
+
+It needs `korid` running as your user and reads only `/proc`. It launches the
+window five times to time the first presented frame (`KORI_STARTUP_TRACE`,
+`KORI_EXIT_AFTER_FIRST_FRAME`), then once more to sample it at rest for 60
+seconds, and runs `korictl telemetry` a hundred times. The only requests it
+sends are `status` and `telemetry`. Without a display every window
+measurement is reported `skipped` with its reason; the daemon's wakeup budget is
+skipped the same way when a panel stream or another client was active during
+its window, because the budget is for a daemon with neither. CI runs the
+`korictl` part on every push (`--only korictl`, against a daemon on an empty
+sysfs tree).
+
+| Budget | Limit |
+|---|---|
+| `korid` `RssAnon` | ≤ 32 MiB |
+| `korid` wakeups, no client and no panel stream | ≤ 6 per second |
+| `kori` cold start, median over 5 launches | ≤ 700 ms |
+| `kori` `RssAnon` | ≤ 110 MiB |
+| `kori` total `VmRSS` | ≤ 320 MiB, a non-regression ceiling |
+| `kori` CPU at rest | ≤ 1.5% of one core |
+| `korictl` on disk | ≤ 3 MiB |
+| `korictl telemetry`, 95th percentile of 100 runs | ≤ 50 ms |
+
+Latest output, recorded on 2026-11-18 on the development machine against a release
+`korid` serving an empty sysfs tree (no Kraken, no panel), so the daemon figures
+are those of a daemon with no device to sample. The run on the owned Kraken
+replaces it before the next tag (`docs/releasing.md`).
+
+```json
+{
+  "command": "scripts/budgets.sh",
+  "measured_at": "2026-11-18T13:34:43Z",
+  "kernel": "7.3.4-300.fc45.x86_64",
+  "window_s": 60,
+  "conditions": {
+    "korid_exe": "~/.cargo-target/kori/release/korid",
+    "other_clients": 0,
+    "panel_streaming": false
+  },
+  "measurements": [
+    {
+      "name": "korid_rss_anon",
+      "value": 21.9,
+      "unit": "MiB",
+      "budget": 32,
+      "pass": true
+    },
+    {
+      "name": "korid_cpu",
+      "value": 0.00,
+      "unit": "percent_of_one_core",
+      "budget": null,
+      "pass": null
+    },
+    {
+      "name": "korid_wakeups",
+      "value": 4.00,
+      "unit": "per_second",
+      "budget": 6,
+      "pass": true
+    },
+    {
+      "name": "kori_cold_start_median",
+      "value": 231.2,
+      "unit": "ms",
+      "budget": 700,
+      "pass": true
+    },
+    {
+      "name": "kori_rss_anon",
+      "value": 64.3,
+      "unit": "MiB",
+      "budget": 110,
+      "pass": true
+    },
+    {
+      "name": "kori_vm_rss",
+      "value": 254.3,
+      "unit": "MiB",
+      "budget": 320,
+      "pass": true
+    },
+    {
+      "name": "kori_cpu",
+      "value": 1.23,
+      "unit": "percent_of_one_core",
+      "budget": 1.5,
+      "pass": true
+    },
+    {
+      "name": "korictl_size",
+      "value": 2.56,
+      "unit": "MiB",
+      "budget": 3,
+      "pass": true
+    },
+    {
+      "name": "korictl_telemetry_p95",
+      "value": 1.5,
+      "unit": "ms",
+      "budget": 50,
+      "pass": true
+    }
+  ],
+  "pass": true
+}
+```
+
+**`kori_cpu` sits close to its budget.** This run measured 1.23% of one core;
+four earlier 60-second samples of the window at rest on Monitoring gave 1.30%,
+1.58%, 1.35% and 1.48%, so a run can fail on it. The window's cost is not what
+this measurement changed; it is recorded as found.
+
+Total `VmRSS` is dominated by the graphics driver and shader compiler mappings
+linked in by GPUI, shared with the other GPU clients on the machine. It is a
+non-regression ceiling, not an optimization target. The metric the project
 steers by is `RssAnon`.
 
 ## Decision history
