@@ -15,6 +15,14 @@
 //! the gauge happens to fall, so nothing here promises it either way. The
 //! stream produces one frame a second regardless.
 //!
+//! **A frame whose inputs did not change is not even rendered.** The renderer
+//! is a pure function of the preset, the two samples and the panel geometry,
+//! so a tick whose three inputs equal those of the frame the panel holds would
+//! render that same frame and deduplicate it. The tick skips straight to that
+//! answer. The samples are compared bit for bit, never rounded: only identical
+//! inputs are provably the same picture, and a reading that moved by a hair is
+//! rendered and left to the frame comparison above, as before.
+//!
 //! **The brightness is not part of that comparison.** It is a panel setting
 //! carried by its own report, so it is written before the picture is compared
 //! and a deduplicated frame never swallows it. Sending it afterwards was a
@@ -46,7 +54,7 @@
 use std::time::{Duration, Instant};
 
 use kori_core::capability::LcdPanel;
-use kori_core::display::{DisplayError, DisplayPreset, MetricSample};
+use kori_core::display::{DisplayError, DisplayPreset, LcdMetric, MetricSample};
 use kori_core::ipc::{DisplayOutcome, DisplayState, HardwareState, Revision};
 use kori_core::lighting::Brightness;
 use kori_hardware_linux::lcd::{LcdError, LcdLink};
@@ -82,6 +90,13 @@ pub struct DisplayExecutor {
     last_frame_at_unix_ms: Option<u64>,
     /// The animation playing, when the active preset names one.
     animation: Option<Animation>,
+    /// Renders performed, for the tests that count them.
+    #[cfg(test)]
+    renders: u64,
+    /// Render every tick, as the executor did before it compared inputs, so a
+    /// test can run both implementations over the same sequence.
+    #[cfg(test)]
+    always_render: bool,
 }
 
 /// What the panel is showing, and the frame that put it there.
@@ -92,6 +107,32 @@ pub struct DisplayExecutor {
 struct Committed {
     preset: DisplayPreset,
     frame: Vec<u8>,
+    /// Inputs known to render to `frame`, when a render produced it.
+    ///
+    /// Held with the frame rather than beside it, so whatever drops the record
+    /// of what the panel holds (a failed transfer, a device that went away)
+    /// drops this with it, and the next tick renders and sends.
+    rendered_from: Option<RenderInputs>,
+}
+
+/// Everything a reading frame is a function of.
+#[derive(Debug, Clone, PartialEq)]
+struct RenderInputs {
+    preset: DisplayPreset,
+    /// Each sample's metric and the exact bits of its value.
+    samples: [(LcdMetric, Option<u32>); 2],
+    panel: LcdPanel,
+}
+
+impl RenderInputs {
+    fn new(preset: &DisplayPreset, samples: &[MetricSample; 2], panel: &LcdPanel) -> Self {
+        let bits = |sample: &MetricSample| (sample.metric, sample.value.map(f32::to_bits));
+        Self {
+            preset: preset.clone(),
+            samples: [bits(&samples[0]), bits(&samples[1])],
+            panel: panel.clone(),
+        }
+    }
 }
 
 /// A stream that stopped, and the wait before it is allowed to try again.
@@ -151,6 +192,10 @@ impl DisplayExecutor {
             failed_transfers: 0,
             last_frame_at_unix_ms: None,
             animation: None,
+            #[cfg(test)]
+            renders: 0,
+            #[cfg(test)]
+            always_render: false,
         }
     }
 
@@ -392,6 +437,14 @@ impl DisplayExecutor {
             .as_ref()
             .filter(|preset| preset.mode.uses_readings())?
             .clone();
+        if let Some(outcome) = self.unchanged(&preset, samples) {
+            // What the render would have come to: the same picture, already on
+            // the glass. A frame the panel holds is also what clears a fault,
+            // and a fault can only be standing here after its wait ran out,
+            // since a failed transfer drops the record this matched against.
+            self.faulted = None;
+            return Some(outcome);
+        }
         match self.send(&preset, samples) {
             Ok(outcome) => {
                 match &outcome.hardware {
@@ -421,8 +474,49 @@ impl DisplayExecutor {
             return Ok(absent(preset));
         };
 
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let frame = kori_lcd_renderer::render(preset, samples, &panel)?.to_rgb565_be();
-        Ok(self.send_bytes(preset, frame))
+        let outcome = self.send_bytes(preset, frame);
+        // Whether the frame was sent or matched the one already there, the
+        // panel now holds exactly what these inputs render to.
+        if outcome.hardware == HardwareState::Confirmed
+            && let Some(entry) = self.committed.as_mut()
+        {
+            entry.rendered_from = Some(RenderInputs::new(preset, samples, &panel));
+        }
+        Ok(outcome)
+    }
+
+    /// The outcome of rendering `preset` against `samples`, when it is known
+    /// without rendering: the panel holds the frame those exact inputs render
+    /// to, at the brightness the preset asks for.
+    ///
+    /// That is precisely the case [`Self::send_bytes`] would have deduplicated
+    /// after the render, so the outcome is the one it returns there.
+    fn unchanged(
+        &self,
+        preset: &DisplayPreset,
+        samples: &[MetricSample; 2],
+    ) -> Option<DisplayOutcome> {
+        #[cfg(test)]
+        if self.always_render {
+            return None;
+        }
+        let panel = self.panel.as_ref()?;
+        let held = self.committed.as_ref()?.rendered_from.as_ref()?;
+        let same = self.link.is_some()
+            && self.brightness == Some(preset.brightness)
+            && *held == RenderInputs::new(preset, samples, panel);
+        same.then(|| DisplayOutcome {
+            preset: preset.clone(),
+            hardware: HardwareState::Confirmed,
+            frames: 0,
+            deduplicated: true,
+            brightness_sent: false,
+        })
     }
 
     /// Everything a frame goes through once it exists: the brightness, the
@@ -476,6 +570,7 @@ impl DisplayExecutor {
                 self.committed = Some(Committed {
                     preset: preset.clone(),
                     frame,
+                    rendered_from: None,
                 });
                 DisplayOutcome {
                     preset: preset.clone(),
@@ -869,6 +964,202 @@ mod tests {
             "a reconnected panel holds nothing this daemon can deduplicate against"
         );
         assert_eq!(outcome.frames, 1);
+    }
+
+    /// The executor as it was before it compared inputs: every tick renders.
+    fn rendering_every_tick() -> (DisplayExecutor, Arc<BulkRecorder>) {
+        let (mut executor, bulk) = executor();
+        executor.always_render = true;
+        (executor, bulk)
+    }
+
+    #[test]
+    fn ten_ticks_with_identical_samples_cause_exactly_one_render() {
+        let (mut executor, _bulk) = executor();
+        let preset = DisplayPreset::default_infographic();
+        let start = Instant::now();
+        executor
+            .apply(&preset, &samples(Some(50.0), Some(40.0)))
+            .unwrap();
+
+        let before = executor.renders;
+        for second in 0..10 {
+            let outcome = executor
+                .refresh(
+                    start + Duration::from_secs(second),
+                    &samples(Some(51.0), Some(40.0)),
+                )
+                .unwrap();
+            assert_eq!(outcome.hardware, HardwareState::Confirmed);
+        }
+        assert_eq!(executor.renders - before, 1);
+    }
+
+    #[test]
+    fn samples_are_compared_bit_for_bit_not_by_value() {
+        let (mut executor, _bulk) = executor();
+        let preset = DisplayPreset::default_infographic();
+        let start = Instant::now();
+        executor
+            .apply(&preset, &samples(Some(0.0), Some(40.0)))
+            .unwrap();
+        let before = executor.renders;
+        // Equal as numbers, different as bits: rendered, then left to the
+        // frame comparison.
+        let outcome = executor
+            .refresh(start, &samples(Some(-0.0), Some(40.0)))
+            .unwrap();
+        assert_eq!(executor.renders - before, 1);
+        assert!(
+            outcome.deduplicated,
+            "the same picture, found by comparing it"
+        );
+        // And a NaN is the same bits as itself, so it renders once.
+        let nan = samples(Some(f32::NAN), Some(40.0));
+        executor.refresh(start, &nan).unwrap();
+        executor.refresh(start, &nan).unwrap();
+        assert_eq!(executor.renders - before, 2);
+    }
+
+    #[test]
+    fn a_recorded_sequence_sends_the_same_bytes_as_rendering_every_tick() {
+        // Steady stretches, moves by a hair and by a degree, unavailable
+        // readings, a failed transfer with its backoff, a device that went away
+        // and came back, and a brightness change: everything the tick sees.
+        enum Step {
+            Tick(Option<f32>, Option<f32>),
+            Fail,
+            Recover,
+            Forget,
+            Apply(u8),
+        }
+        use Step::*;
+        let sequence = [
+            Tick(Some(50.0), Some(40.0)),
+            Tick(Some(50.0), Some(40.0)),
+            Tick(Some(50.0), Some(40.0)),
+            Tick(Some(50.01), Some(40.0)),
+            Tick(Some(50.01), Some(40.0)),
+            Tick(Some(51.0), Some(40.0)),
+            Tick(None, Some(40.0)),
+            Tick(None, Some(40.0)),
+            Tick(None, None),
+            Tick(Some(51.0), Some(40.0)),
+            Fail,
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(52.0), Some(40.0)),
+            Recover,
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(52.0), Some(40.0)),
+            Forget,
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(52.0), Some(40.0)),
+            Apply(30),
+            Tick(Some(52.0), Some(40.0)),
+            Tick(Some(53.0), Some(41.0)),
+            Tick(Some(53.0), Some(41.0)),
+        ];
+
+        let run = |(mut executor, bulk): (DisplayExecutor, Arc<BulkRecorder>)| {
+            let start = Instant::now();
+            let mut preset = DisplayPreset::default_infographic();
+            let mut last = samples(Some(50.0), Some(40.0));
+            executor.apply(&preset, &last).unwrap();
+            let mut outcomes = Vec::new();
+            for (second, step) in sequence.iter().enumerate() {
+                let now = start + Duration::from_secs(second as u64);
+                match step {
+                    Tick(first, second) => {
+                        last = samples(*first, *second);
+                        outcomes.push(executor.refresh(now, &last));
+                    }
+                    Fail => bulk.fail_with(UsbfsError::PermissionDenied {
+                        path: "/dev/bus/usb/001/004".to_string(),
+                    }),
+                    Recover => bulk.recover(),
+                    Forget => executor.forget(),
+                    Apply(percent) => {
+                        preset.brightness = Brightness::new(*percent).unwrap();
+                        outcomes.push(Some(executor.apply(&preset, &last).unwrap()));
+                    }
+                }
+            }
+            (bulk.transfers(), outcomes, executor.renders)
+        };
+
+        let (expected, expected_outcomes, every_tick) = run(rendering_every_tick());
+        let (sent, outcomes, renders) = run(executor());
+        assert_eq!(sent, expected, "the frames on the wire changed");
+        assert_eq!(
+            outcomes, expected_outcomes,
+            "what each tick reported changed"
+        );
+        assert!(
+            renders < every_tick,
+            "{renders} renders against {every_tick}: nothing was skipped"
+        );
+    }
+
+    #[test]
+    fn a_retry_after_the_backoff_renders_and_sends_even_with_unchanged_samples() {
+        let (mut executor, bulk) = executor();
+        let preset = DisplayPreset::default_infographic();
+        let steady = samples(Some(50.0), Some(40.0));
+        let start = Instant::now();
+        executor.apply(&preset, &steady).unwrap();
+        executor
+            .refresh(start, &samples(Some(51.0), Some(40.0)))
+            .unwrap();
+
+        // The frame for 52 is refused, and then nothing moves at all.
+        bulk.fail_with(UsbfsError::PermissionDenied {
+            path: "/dev/bus/usb/001/004".to_string(),
+        });
+        let failing = samples(Some(52.0), Some(40.0));
+        executor.refresh(start, &failing);
+        assert!(executor.fault_reason().is_some());
+        bulk.recover();
+        let sent = pictures(&bulk);
+        let before = executor.renders;
+
+        assert_eq!(
+            executor.refresh(start + Duration::from_secs(1), &failing),
+            None,
+            "inside the wait"
+        );
+        let outcome = executor
+            .refresh(start + FIRST_RETRY_DELAY, &failing)
+            .expect("the wait ran out");
+        assert_eq!(outcome.frames, 1);
+        assert_eq!(outcome.hardware, HardwareState::Confirmed);
+        assert_eq!(executor.renders - before, 1);
+        assert_eq!(pictures(&bulk), sent + 1);
+        assert_eq!(executor.fault_reason(), None);
+    }
+
+    #[test]
+    fn a_panel_that_came_back_is_rendered_and_sent_even_with_unchanged_samples() {
+        let (mut executor, bulk) = executor();
+        let preset = DisplayPreset::default_infographic();
+        let steady = samples(Some(50.0), Some(40.0));
+        let start = Instant::now();
+        executor.apply(&preset, &steady).unwrap();
+        executor.refresh(start, &steady).unwrap();
+        let sent = pictures(&bulk);
+
+        // What the daemon does when the Kraken goes away.
+        executor.forget();
+        let outcome = executor
+            .refresh(start + Duration::from_secs(1), &steady)
+            .unwrap();
+        assert_eq!(outcome.frames, 1);
+        assert!(!outcome.deduplicated);
+        assert_eq!(pictures(&bulk), sent + 1);
     }
 
     #[test]

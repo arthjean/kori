@@ -25,6 +25,7 @@ pub mod startup;
 pub mod state;
 pub mod stream;
 pub mod telemetry;
+pub mod wake;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

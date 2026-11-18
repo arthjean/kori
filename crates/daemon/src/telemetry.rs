@@ -16,7 +16,6 @@
 
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -30,8 +29,7 @@ use kori_hardware_linux::gpu::GpuSensor;
 use kori_hardware_linux::hwmon::KrakenHwmon;
 use kori_hardware_linux::sensors::SystemSensors;
 
-/// Longest a collector waits before noticing a shutdown request.
-const SHUTDOWN_GRANULARITY: Duration = Duration::from_millis(50);
+use crate::wake::{Alarm, Wake};
 
 /// The shared, always-latest section of every collector.
 #[derive(Debug)]
@@ -70,7 +68,7 @@ impl SamplerState {
 /// Runs the collectors and hands out the latest snapshot.
 pub struct Sampler {
     state: Arc<Mutex<SamplerState>>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<Alarm>,
     threads: Vec<JoinHandle<()>>,
     interval_ms: u64,
 }
@@ -82,20 +80,46 @@ impl Sampler {
     /// missing sensor or an absent NVML never delays daemon startup.
     pub fn start(sysfs: &SysfsRoot, proc_root: &Path, interval: Duration) -> Self {
         let state = Arc::new(Mutex::new(SamplerState::new(crate::now_unix_ms())));
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(Alarm::new());
         let interval_ms = interval.as_millis() as u64;
 
-        let threads = vec![
-            spawn_kraken(sysfs.clone(), interval, &state, &stop),
-            spawn_system(
-                sysfs.clone(),
-                proc_root.to_path_buf(),
-                interval,
-                &state,
-                &stop,
+        let started = [
+            (
+                Collector::Kraken,
+                spawn_kraken(sysfs.clone(), interval, &state, &stop),
             ),
-            spawn_gpu(interval, &state, &stop),
+            (
+                Collector::Cpu,
+                spawn_system(
+                    sysfs.clone(),
+                    proc_root.to_path_buf(),
+                    interval,
+                    &state,
+                    &stop,
+                ),
+            ),
+            (Collector::Gpu, spawn_gpu(interval, &state, &stop)),
         ];
+        let mut threads = Vec::with_capacity(started.len());
+        for (collector, thread) in started {
+            match thread {
+                Ok(thread) => threads.push(thread),
+                // A collector with no thread is a collector that failed, and is
+                // reported like one: its section keeps saying no sample has
+                // completed, and the failure says why.
+                Err(error) => {
+                    if let Ok(mut state) = state.lock() {
+                        state.set_failure(
+                            collector,
+                            Some(format!(
+                                "The {} collector could not start a thread: {error}.",
+                                collector.label()
+                            )),
+                        );
+                    }
+                }
+            }
+        }
 
         Self {
             state,
@@ -130,7 +154,7 @@ impl Sampler {
 
     /// Ask every collector to finish its current pass and exit.
     pub fn stop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.stop();
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
@@ -157,12 +181,12 @@ fn spawn_kraken(
     sysfs: SysfsRoot,
     interval: Duration,
     state: &Arc<Mutex<SamplerState>>,
-    stop: &Arc<AtomicBool>,
-) -> JoinHandle<()> {
+    stop: &Arc<Alarm>,
+) -> std::io::Result<JoinHandle<()>> {
     let state = Arc::clone(state);
     let stop = Arc::clone(stop);
 
-    std::thread::spawn(move || {
+    crate::wake::spawn("kraken", move || {
         let mut hwmon = KrakenHwmon::locate(&sysfs);
         let mut tracker = AlertTracker::new();
 
@@ -205,12 +229,12 @@ fn spawn_system(
     proc_root: PathBuf,
     interval: Duration,
     state: &Arc<Mutex<SamplerState>>,
-    stop: &Arc<AtomicBool>,
-) -> JoinHandle<()> {
+    stop: &Arc<Alarm>,
+) -> std::io::Result<JoinHandle<()>> {
     let state = Arc::clone(state);
     let stop = Arc::clone(stop);
 
-    std::thread::spawn(move || {
+    crate::wake::spawn("system", move || {
         let mut sensors = SystemSensors::open(&sysfs, proc_root);
         run(Collector::Cpu, interval, &stop, &state, move |now| {
             Section::System(sensors.telemetry(now))
@@ -222,12 +246,12 @@ fn spawn_system(
 fn spawn_gpu(
     interval: Duration,
     state: &Arc<Mutex<SamplerState>>,
-    stop: &Arc<AtomicBool>,
-) -> JoinHandle<()> {
+    stop: &Arc<Alarm>,
+) -> std::io::Result<JoinHandle<()>> {
     let state = Arc::clone(state);
     let stop = Arc::clone(stop);
 
-    std::thread::spawn(move || {
+    crate::wake::spawn("gpu", move || {
         let sensor = GpuSensor::open();
         run(Collector::Gpu, interval, &stop, &state, move |now| {
             Section::Gpu(sensor.sample(now))
@@ -253,11 +277,11 @@ enum Section {
 fn run(
     collector: Collector,
     interval: Duration,
-    stop: &Arc<AtomicBool>,
+    stop: &Arc<Alarm>,
     state: &Arc<Mutex<SamplerState>>,
     mut sample: impl FnMut(u64) -> Section,
 ) {
-    while !stop.load(Ordering::SeqCst) {
+    while !stop.is_stopped() {
         let started = Instant::now();
         let now = crate::now_unix_ms();
 
@@ -295,15 +319,24 @@ fn run(
             }
         }
 
-        // Pace against the pass start so a slow sample shortens the wait
-        // rather than adding to it.
-        let mut remaining = interval.saturating_sub(started.elapsed());
-        while !remaining.is_zero() && !stop.load(Ordering::SeqCst) {
-            let slice = remaining.min(SHUTDOWN_GRANULARITY);
-            std::thread::sleep(slice);
-            remaining -= slice;
+        // One wait, to the next pass, that a stop ends at once.
+        if stop.sleep_until(next_pass(started, interval)) == Wake::Stopped {
+            break;
         }
     }
+}
+
+/// When the pass after the one that started at `started` is due.
+///
+/// Paced against the pass start, so a slow sample shortens the wait rather
+/// than adding to it, and a pass that took longer than the interval is
+/// followed at once: its deadline is already behind the clock, and a deadline
+/// in the past is not waited for. The wait is never longer than `interval`.
+/// An interval too large for the clock to represent is not one the daemon is
+/// ever configured with; it degrades to passes back to back rather than to a
+/// wait with no end.
+fn next_pass(started: Instant, interval: Duration) -> Instant {
+    started.checked_add(interval).unwrap_or(started)
 }
 
 fn panic_detail(payload: &Box<dyn std::any::Any + Send>) -> String {
@@ -415,6 +448,88 @@ mod tests {
         drop(sampler);
 
         assert_eq!(before, tree_state(&hwmon), "telemetry wrote to hwmon");
+    }
+
+    #[test]
+    fn a_stop_during_the_wait_ends_every_collector_within_100_ms() {
+        let fake = FakeSysfs::new("sampler-stop");
+        fake.add_kraken();
+        fake.add_kraken_hwmon();
+        let proc_root = fake.add_proc();
+        // The shipped interval: the collectors spend nearly all of it waiting.
+        let mut sampler = Sampler::start(
+            &SysfsRoot::new(fake.root_path()),
+            &proc_root,
+            default_interval(),
+        );
+        assert!(wait_for(Duration::from_secs(3), || {
+            sampler.snapshot().sequence >= 3
+        }));
+        // Every collector finished its first pass and is inside its wait.
+        std::thread::sleep(Duration::from_millis(100));
+
+        let asked = Instant::now();
+        sampler.stop();
+        let elapsed = asked.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "the collectors took {elapsed:?} to stop"
+        );
+    }
+
+    #[test]
+    fn a_pass_longer_than_the_interval_is_followed_at_once() {
+        let state = Arc::new(Mutex::new(SamplerState::new(0)));
+        let stop = Arc::new(Alarm::new());
+        let starts = Arc::new(Mutex::new(Vec::new()));
+        let pass = Duration::from_millis(40);
+        let interval = Duration::from_millis(10);
+
+        let thread = {
+            let (state, stop, starts) =
+                (Arc::clone(&state), Arc::clone(&stop), Arc::clone(&starts));
+            crate::wake::spawn("test-slow", move || {
+                run(Collector::Cpu, interval, &stop, &state, |now| {
+                    starts.lock().unwrap().push(Instant::now());
+                    std::thread::sleep(pass);
+                    Section::System(SystemTelemetry::unavailable(
+                        now,
+                        Unavailable::unreadable("test"),
+                    ))
+                })
+            })
+            .unwrap()
+        };
+        assert!(wait_for(Duration::from_secs(3), || starts
+            .lock()
+            .unwrap()
+            .len()
+            >= 6));
+        stop.stop();
+        thread.join().unwrap();
+
+        // No wait was added after a pass that already overran: each pass
+        // starts where the previous one ended, not an interval later.
+        let starts = starts.lock().unwrap();
+        for pair in starts.windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!(gap >= pass, "{gap:?}");
+            assert!(
+                gap < pass + interval,
+                "a wait followed an overrun pass: {gap:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_next_pass_is_one_interval_after_the_last_one_started() {
+        let started = Instant::now();
+        let interval = Duration::from_secs(1);
+        assert_eq!(next_pass(started, interval), started + interval);
+        // An overrun pass has a deadline already behind the clock, which is not
+        // waited for; an interval the clock cannot hold is not waited for either.
+        assert!(next_pass(started, Duration::ZERO) <= Instant::now());
+        assert_eq!(next_pass(started, Duration::MAX), started);
     }
 
     fn tree_state(root: &std::path::Path) -> Vec<(std::path::PathBuf, std::time::SystemTime, u64)> {

@@ -196,7 +196,7 @@ impl Harness {
             .with_heartbeat(machine.heartbeat);
         let shutdown = server.shutdown_handle();
         let daemon = server.daemon();
-        let thread = std::thread::spawn(move || server.run());
+        let thread = std::thread::spawn(move || server.run().unwrap());
 
         // The socket exists before bind returns, so a connect cannot race it.
         Self {

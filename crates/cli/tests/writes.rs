@@ -129,7 +129,7 @@ fn a_read_only_daemon_refuses_set_cooling_with_its_reason() {
     let listener = kori_daemon::server::bind_socket(&paths.socket).unwrap();
     let server = Server::attach(listener, second);
     let shutdown = server.shutdown_handle();
-    let thread = std::thread::spawn(move || server.run());
+    let thread = std::thread::spawn(move || server.run().unwrap());
 
     let run = korictl(
         &paths.socket,

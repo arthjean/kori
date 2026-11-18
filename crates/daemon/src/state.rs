@@ -899,9 +899,10 @@ impl Daemon {
     /// it here: the reconciliation guards writes this daemon made, and a write
     /// does not stop needing a guard because nobody is looking at it.
     ///
-    /// A tick that finds nothing to do costs one sample and one render and no
-    /// transfer, because the executor compares the picture it produced against
-    /// the one the panel already holds.
+    /// A tick that finds nothing to do costs one sample, no render and no
+    /// transfer: the executor skips the render when the preset, the samples
+    /// and the panel are exactly those of the frame the panel holds, and
+    /// compares the picture against that frame when they are not.
     pub fn tick(&mut self, now: Instant) {
         let snapshot = self.sampler.snapshot();
         self.history.record(&snapshot, crate::now_unix_ms());

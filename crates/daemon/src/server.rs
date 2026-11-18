@@ -12,7 +12,6 @@ use std::io::{BufReader, BufWriter};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,6 +20,7 @@ use kori_core::ipc::{HEARTBEAT_INTERVAL, IpcError, Request, Response, read_frame
 
 use crate::state::Daemon;
 use crate::stream::{self, Hub};
+use crate::wake::{Alarm, Wake};
 
 /// Longest the shutdown waits for subscribers to take their `closing` push.
 ///
@@ -28,26 +28,22 @@ use crate::stream::{self, Hub};
 /// been dropped by its own thread before the process goes.
 const DRAIN_LIMIT: Duration = Duration::from_millis(2_500);
 
-/// Longest the display ticker sleeps between two looks at the clock.
+/// Shortest the display ticker's wait is allowed to be.
 ///
-/// It is what makes shutdown prompt at a cadence of one frame per second, and
-/// it is also the coarsest an animation frame can land: a delay of 100 ms is
-/// hit within one of these of its due instant, since the sleep is recomputed
-/// from the deadline on every pass.
-const TICK_POLL: Duration = Duration::from_millis(50);
-
-/// Shortest that same sleep is allowed to be.
-///
-/// A deadline already in the past would otherwise compute a zero sleep, and a
-/// loop that takes the state mutex without ever yielding is a spin against
-/// every request handler.
+/// Every deadline the ticker computes is ahead of the clock when it computes
+/// it, so this is a guard rather than a cadence: a deadline that somehow came
+/// out in the past would otherwise compute no wait at all, and a loop that
+/// takes the state mutex without ever yielding is a spin against every request
+/// handler.
 const TICK_FLOOR: Duration = Duration::from_millis(1);
 
 /// A running server and the handle used to stop it.
 pub struct Server {
     listener: UnixListener,
     daemon: Arc<Mutex<Daemon>>,
-    shutdown: Arc<AtomicBool>,
+    /// Stops the accept loop and the ticker, and wakes the ticker when a
+    /// request may have changed what it waits for.
+    alarm: Arc<Alarm>,
     /// Why the shutdown was asked for, as `daemon_stopping` records it.
     stop_reason: Arc<Mutex<Option<String>>>,
     frame_interval: Duration,
@@ -83,7 +79,7 @@ impl Server {
         Self {
             listener,
             daemon: Arc::new(Mutex::new(daemon)),
-            shutdown: Arc::new(AtomicBool::new(false)),
+            alarm: Arc::new(Alarm::new()),
             stop_reason: Arc::new(Mutex::new(None)),
             frame_interval: Duration::from_millis(FRAME_INTERVAL_MS),
             hub: Arc::new(Hub::new()),
@@ -116,7 +112,7 @@ impl Server {
     /// A handle that stops the accept loop.
     pub fn shutdown_handle(&self) -> ShutdownHandle {
         ShutdownHandle {
-            flag: Arc::clone(&self.shutdown),
+            alarm: Arc::clone(&self.alarm),
             reason: Arc::clone(&self.stop_reason),
             socket: self.local_path(),
         }
@@ -147,20 +143,31 @@ impl Server {
     /// One thread rather than two because the writes to the panel are
     /// serialized by construction here, and a second thread would put that back
     /// on the mutex to enforce.
-    fn spawn_display_ticker(&self) -> std::thread::JoinHandle<()> {
+    ///
+    /// Between two passes the thread waits for the earlier of its two
+    /// deadlines, in one wait. A stop ends it at once, and so does a ring: a
+    /// request handler rings after every request, because a preset applied
+    /// while the ticker waits for the next telemetry pass may have started an
+    /// animation whose second frame is due long before that.
+    fn spawn_display_ticker(&self) -> std::io::Result<std::thread::JoinHandle<()>> {
         let daemon = Arc::clone(&self.daemon);
-        let shutdown = Arc::clone(&self.shutdown);
+        let alarm = Arc::clone(&self.alarm);
         let interval = self.frame_interval;
         let hub = Arc::clone(&self.hub);
-        std::thread::spawn(move || {
+        crate::wake::spawn("ticker", move || {
             let mut next = Instant::now() + interval;
             // Nothing is playing until a preset says so, so the loop starts on
             // the idle cadence and only shortens once an animation asks it to.
-            // Through the same function every later sleep goes through, so the
-            // first one cannot follow a different rule.
-            let mut nap = nap_until(next);
-            while !shutdown.load(Ordering::SeqCst) {
-                std::thread::sleep(nap);
+            let mut deadline = next;
+            // Taken before the state is read, every time, so a ring from a
+            // request handled after that read wakes the next wait.
+            let mut seen = alarm.mark();
+            loop {
+                let floor = Instant::now() + TICK_FLOOR;
+                if alarm.wait(seen, deadline.max(floor)) == Wake::Stopped {
+                    break;
+                }
+                seen = alarm.mark();
                 let now = Instant::now();
 
                 let mut animation_due = None;
@@ -190,31 +197,48 @@ impl Server {
                     hub.tick();
                 }
 
-                // Sleep to whichever comes first.
-                nap = nap_until(match animation_due {
+                // Wait for whichever comes first.
+                deadline = match animation_due {
                     Some(due) => due.min(next),
                     None => next,
-                });
+                };
             }
         })
     }
 
     /// Serve connections until the shutdown handle fires.
-    pub fn run(self) {
-        let ticker = self.spawn_display_ticker();
+    ///
+    /// Fails only when the daemon's clock cannot be started, before any client
+    /// is served: without it nothing reconciles what the hardware reports
+    /// against what was committed, and a daemon that took writes it then never
+    /// checked is worse than one that did not start.
+    pub fn run(self) -> std::io::Result<()> {
+        let ticker = self.spawn_display_ticker()?;
 
         for stream in self.listener.incoming() {
-            if self.shutdown.load(Ordering::SeqCst) {
+            if self.alarm.is_stopped() {
                 break;
             }
             let Ok(stream) = stream else { continue };
 
             let daemon = Arc::clone(&self.daemon);
             let hub = Arc::clone(&self.hub);
+            let alarm = Arc::clone(&self.alarm);
             let heartbeat = self.heartbeat;
             // One thread per client. The state mutex, not the thread count,
             // is what serializes commands.
-            std::thread::spawn(move || serve(stream, daemon, hub, heartbeat));
+            let started = crate::wake::spawn("client", move || {
+                serve(stream, daemon, hub, alarm, heartbeat)
+            });
+            // The connection went with the closure, so the client sees it
+            // closed; the log says why.
+            if let Err(error) = started {
+                note(&self.daemon, |daemon| {
+                    daemon.record_client_rejected(format!(
+                        "no thread could be started for the connection: {error}"
+                    ))
+                });
+            }
         }
 
         // Recorded first, while every subsystem is still up, so the event is in
@@ -262,12 +286,13 @@ impl Server {
         // connection would block shutdown forever, and it is the write that
         // has to complete, not the connection.
         drop(self.daemon.lock());
+        Ok(())
     }
 }
 
 /// Stops a running [`Server`].
 pub struct ShutdownHandle {
-    flag: Arc<AtomicBool>,
+    alarm: Arc<Alarm>,
     reason: Arc<Mutex<Option<String>>>,
     socket: Option<std::path::PathBuf>,
 }
@@ -283,24 +308,11 @@ impl ShutdownHandle {
         if let Ok(mut slot) = self.reason.lock() {
             slot.get_or_insert_with(|| reason.into());
         }
-        self.flag.store(true, Ordering::SeqCst);
+        self.alarm.stop();
         if let Some(path) = &self.socket {
             let _ = UnixStream::connect(path);
         }
     }
-}
-
-/// How long to sleep before looking at the clock again.
-///
-/// Never longer than [`TICK_POLL`], so shutdown stays prompt even when nothing
-/// is due for a second, and never shorter than [`TICK_FLOOR`], because a
-/// deadline already in the past would compute a zero sleep and a loop that takes
-/// the state mutex without ever yielding is a spin against every request
-/// handler.
-fn nap_until(deadline: Instant) -> Duration {
-    deadline
-        .saturating_duration_since(Instant::now())
-        .clamp(TICK_FLOOR, TICK_POLL)
 }
 
 /// Write one event to the daemon's log, or drop it when the state is gone.
@@ -317,7 +329,13 @@ fn note(daemon: &Arc<Mutex<Daemon>>, event: impl FnOnce(&mut Daemon)) {
 }
 
 /// Serve one connection.
-fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>, hub: Arc<Hub>, heartbeat: Duration) {
+fn serve(
+    stream: UnixStream,
+    daemon: Arc<Mutex<Daemon>>,
+    hub: Arc<Hub>,
+    alarm: Arc<Alarm>,
+    heartbeat: Duration,
+) {
     let peer = match peer_credentials(&stream) {
         Ok(peer) => peer,
         Err(reason) => {
@@ -410,8 +428,11 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>, hub: Arc<Hub>, heartbea
             ),
         };
         // A request may have recorded an event or changed the status, which a
-        // subscriber should not have to wait for the next tick to see.
+        // subscriber should not have to wait for the next tick to see. It may
+        // also have started an animation, whose next frame the ticker has to
+        // learn about now rather than at its next telemetry pass.
         hub.notify();
+        alarm.ring();
 
         if let (Response::Subscribed { topics, interval_s }, Some(after_seq)) =
             (&response, after_seq)

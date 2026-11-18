@@ -324,8 +324,9 @@ fn serve() -> Result<(), String> {
 
     let server = Server::attach(listener, daemon);
     stop_on_signal(server.shutdown_handle())?;
-    server.run();
-    Ok(())
+    server
+        .run()
+        .map_err(|error| format!("could not start the daemon's clock: {error}"))
 }
 
 /// Turn a termination signal into the orderly shutdown the server implements.
@@ -346,7 +347,7 @@ fn stop_on_signal(handle: kori_daemon::server::ShutdownHandle) -> Result<(), Str
     let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGINT])
         .map_err(|error| format!("could not install the signal handler: {error}"))?;
 
-    std::thread::spawn(move || {
+    kori_daemon::wake::spawn("signals", move || {
         if let Some(signal) = signals.forever().next() {
             let name = match signal {
                 SIGTERM => "SIGTERM",
@@ -355,6 +356,7 @@ fn stop_on_signal(handle: kori_daemon::server::ShutdownHandle) -> Result<(), Str
             };
             handle.stop_because(format!("received {name}"));
         }
-    });
+    })
+    .map_err(|error| format!("could not start the signal thread: {error}"))?;
     Ok(())
 }

@@ -12,6 +12,8 @@
 
 mod common;
 
+use std::time::Duration;
+
 use kori_core::KRAKEN_BASE;
 use kori_core::capability::CapabilityId;
 use kori_core::display::DisplayMode;
@@ -225,4 +227,130 @@ fn a_saved_profile_round_trips_its_panel_preset_without_pixels_reaching_the_file
         .find(|candidate| candidate.name == "Panel")
         .unwrap();
     assert_eq!(stored_profile.display.as_ref(), Some(&wanted));
+}
+
+#[test]
+fn an_animation_frame_lands_within_50_ms_of_its_due_time_at_the_shipped_cadence() {
+    // The daemon's clock at its shipped one second, so nothing but the
+    // animation's own deadline can wake the ticker in time for its frames.
+    let firmware = kori_hardware_linux::lcd::VALIDATED_FIRMWARE[0];
+    let harness = Harness::start_on(
+        "lcd-animation-cadence",
+        common::Machine {
+            interval: kori_daemon::telemetry::default_interval(),
+            lcd: LcdBackend::Link(Box::new(FakeKraken::new(firmware).link())),
+            ..common::Machine::default()
+        },
+        |_, _| {},
+    );
+    let mut client = harness.client();
+
+    // Eight distinct frames of 200 ms each.
+    const DELAY_MS: i64 = 200;
+    let directory = kori_lcd_renderer::testing::scratch("animation-cadence").unwrap();
+    let path = directory.join("animation.gif");
+    let pictures: Vec<(kori_core::lighting::Rgb, u16)> = (0..8)
+        .map(|index| {
+            (
+                kori_core::lighting::Rgb::new(index as u8 * 32, 0x40, 0x80),
+                (DELAY_MS / 10) as u16,
+            )
+        })
+        .collect();
+    kori_lcd_renderer::testing::write_gif(&path, 16, &pictures).unwrap();
+    let mut animated = preset(DisplayMode::Image);
+    animated.image = Some(path);
+
+    // The apply sends the first frame; the second is due 200 ms later, long
+    // before the next telemetry pass the ticker was waiting for.
+    let outcome = client.apply_display(animated).unwrap();
+    assert_eq!(outcome.frames, 1);
+    std::thread::sleep(Duration::from_millis(1_100));
+
+    for _ in 0..6 {
+        let display = client.status().unwrap().display;
+        let started = display.animation_started_at_unix_ms.unwrap() as i64;
+        let landed = display.last_frame_at_unix_ms.unwrap() as i64;
+        // Frame k is due `k * DELAY_MS` after the start, so how far past its
+        // due instant the last one landed is the remainder.
+        let late = (landed - started).rem_euclid(DELAY_MS);
+        assert!(late < 50, "a frame landed {late} ms after it was due");
+        // And none was skipped for lateness: one picture per 200 ms elapsed.
+        let expected = ((landed - started) / DELAY_MS) as u64 + 1;
+        assert_eq!(display.frames_sent, expected, "{display:?}");
+        assert_eq!(display.dropped_frames, 0, "{display:?}");
+        std::thread::sleep(Duration::from_millis(130));
+    }
+}
+
+#[test]
+fn the_daemon_clock_redraws_on_a_moved_reading_and_on_a_returning_kraken_only() {
+    let firmware = kori_hardware_linux::lcd::VALIDATED_FIRMWARE[0];
+    let harness = Harness::start_on(
+        "lcd-steady",
+        common::Machine {
+            lcd: LcdBackend::Link(Box::new(FakeKraken::new(firmware).link())),
+            ..common::Machine::default()
+        },
+        |_, _| {},
+    );
+    let mut client = harness.client();
+    let hwmon = harness.hwmon_path();
+
+    // Both readings come from the fixture, so nothing moves unless the test
+    // moves it.
+    let mut steady = preset(DisplayMode::DualInfographic);
+    steady.readings[0].metric = kori_core::display::LcdMetric::LiquidTemperature;
+    steady.readings[1].metric = kori_core::display::LcdMetric::CpuTemperature;
+    assert_eq!(client.apply_display(steady).unwrap().frames, 1);
+    let frames =
+        |client: &mut kori_core::client::Client| client.status().unwrap().display.frames_sent;
+    let wait_for_frames = |client: &mut kori_core::client::Client, wanted: u64| {
+        harness.wait_for_status(client, Duration::from_secs(5), |status| {
+            status.display.frames_sent >= wanted
+        });
+        frames(client)
+    };
+
+    // Ten ticks of identical readings put nothing on the wire.
+    let settled = wait_for_frames(&mut client, 1);
+    std::thread::sleep(common::FAST_INTERVAL * 10);
+    assert_eq!(frames(&mut client), settled);
+
+    // A reading that moved is drawn and sent on the next tick.
+    harness.fake.set_reading(&hwmon, "temp1_input", "31500");
+    assert_eq!(wait_for_frames(&mut client, settled + 1), settled + 1);
+    std::thread::sleep(common::FAST_INTERVAL * 10);
+    let moved = frames(&mut client);
+    assert_eq!(moved, settled + 1);
+
+    // The Kraken goes away and comes back with exactly the readings it left
+    // with. The panel it returns with holds nothing this daemon sent, so the
+    // first tick draws and sends the same picture again.
+    let attributes = ["temp1_input", "fan1_input", "fan2_input", "name"];
+    let saved: Vec<(&str, String)> = attributes
+        .iter()
+        .map(|attribute| {
+            (
+                *attribute,
+                std::fs::read_to_string(hwmon.join(attribute)).unwrap(),
+            )
+        })
+        .collect();
+    for attribute in attributes {
+        harness.fake.remove_attribute(&hwmon, attribute);
+    }
+    harness.wait_for_telemetry(&mut client, Duration::from_secs(5), |snapshot| {
+        !snapshot.kraken.present
+    });
+    // The daemon's own clock has to see the absence too, not just the sampler.
+    std::thread::sleep(common::FAST_INTERVAL * 5);
+    for (attribute, contents) in &saved {
+        std::fs::write(hwmon.join(attribute), contents).unwrap();
+    }
+    assert_eq!(
+        wait_for_frames(&mut client, moved + 1),
+        moved + 1,
+        "the returning panel was sent its picture"
+    );
 }
