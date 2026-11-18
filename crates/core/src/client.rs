@@ -247,10 +247,20 @@ impl Client {
         &mut self,
         program: crate::profile::CoolingProgram,
     ) -> Result<crate::ipc::ApplyOutcome, ClientError> {
+        self.apply_expecting(program, None)
+    }
+
+    /// The same, refused with [`IpcError::Conflict`] unless the cooling
+    /// revision is still `expect_revision` when the daemon takes the request.
+    pub fn apply_expecting(
+        &mut self,
+        program: crate::profile::CoolingProgram,
+        expect_revision: Option<u64>,
+    ) -> Result<crate::ipc::ApplyOutcome, ClientError> {
         self.expect(
             Request::ApplyProgram {
                 program,
-                expect_revision: None,
+                expect_revision,
             },
             "applied",
             |response| match response {
@@ -265,10 +275,19 @@ impl Client {
         &mut self,
         command: crate::lighting::LightingCommand,
     ) -> Result<crate::ipc::LightingOutcome, ClientError> {
+        self.apply_lighting_expecting(command, None)
+    }
+
+    /// The same, conditional on the revision of the channel it names.
+    pub fn apply_lighting_expecting(
+        &mut self,
+        command: crate::lighting::LightingCommand,
+        expect_revision: Option<u64>,
+    ) -> Result<crate::ipc::LightingOutcome, ClientError> {
         self.expect(
             Request::ApplyLighting {
                 command,
-                expect_revision: None,
+                expect_revision,
             },
             "lit",
             |response| match response {
@@ -283,10 +302,19 @@ impl Client {
         &mut self,
         preset: crate::display::DisplayPreset,
     ) -> Result<crate::ipc::DisplayOutcome, ClientError> {
+        self.apply_display_expecting(preset, None)
+    }
+
+    /// The same, conditional on the panel's revision.
+    pub fn apply_display_expecting(
+        &mut self,
+        preset: crate::display::DisplayPreset,
+        expect_revision: Option<u64>,
+    ) -> Result<crate::ipc::DisplayOutcome, ClientError> {
         self.expect(
             Request::ApplyDisplay {
                 preset,
-                expect_revision: None,
+                expect_revision,
             },
             "shown",
             |response| match response {
@@ -493,6 +521,34 @@ impl Subscription {
     /// The next frame the daemon pushed.
     pub fn next_push(&mut self) -> Result<Push, ClientError> {
         read_frame(&mut self.reader).map_err(ClientError::Disconnected)
+    }
+
+    /// A handle that ends this subscription from another thread.
+    ///
+    /// A reader blocked in [`Self::next_push`] waits up to a heartbeat and a
+    /// second for the next frame. A client shutting down cannot wait that
+    /// long, so it closes the socket under the reader instead, which returns
+    /// the blocked read at once.
+    pub fn closer(&self) -> Result<SubscriptionCloser, ClientError> {
+        self.reader
+            .get_ref()
+            .try_clone()
+            .map(|stream| SubscriptionCloser { stream })
+            .map_err(|error| ClientError::Disconnected(FrameError::Io(error)))
+    }
+}
+
+/// Ends a [`Subscription`] from outside the thread reading it.
+pub struct SubscriptionCloser {
+    stream: UnixStream,
+}
+
+impl SubscriptionCloser {
+    /// Shut the connection in both directions. The daemon sees the client
+    /// leave, which is the whole of unsubscribing, and the reader's next read
+    /// fails rather than waiting out its timeout.
+    pub fn close(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
     }
 }
 

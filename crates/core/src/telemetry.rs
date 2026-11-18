@@ -28,8 +28,7 @@ mod view;
 
 pub use alerts::{AlertTracker, LIQUID_CRITICAL_C, STALL_SAMPLE_COUNT, SafetyAlert};
 pub use view::{
-    DROP_AFTER_MS, HISTORY_WINDOW_MS, History, HistoryPoint, MetricView, STALE_AFTER_MS, Tracked,
-    format_binary_bytes, format_temperature,
+    DROP_AFTER_MS, MetricView, STALE_AFTER_MS, Tracked, format_binary_bytes, format_temperature,
 };
 
 /// Interval between two samples, in milliseconds.

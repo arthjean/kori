@@ -1,52 +1,141 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The Monitoring screen: system and cooling state at a glance.
+//! The Monitoring screen: the current state, and the temperature trend.
 //!
-//! Readouts and their provenance, and nothing operable. Each block is the
-//! chart its data asks for: a dial for a value against its limit, an area for
-//! a load with a floor, lines for temperatures that run close together,
-//! columns for a speed averaged per minute, and a radar for every share of
-//! capacity read as one shape. Every value a chart shows on hover is also
-//! written in its legend, so the pointer is a shortcut and never the only way
-//! to a number.
+//! Readouts and their provenance, and nothing operable. Four dials for the
+//! values that have a limit to be read against, and one line chart for the
+//! three temperatures that run close together. That is all: one glance gives
+//! where the machine is and where it has been, and every number appears once.
+//! The load area, the cooling columns and the headroom radar each repeated a
+//! value a dial or the legend already stated.
+//!
+//! The chart's points are the daemon's. It records the series by tick whether
+//! or not a window is open, so the chart shows the full fifteen minutes the
+//! moment the screen opens, and the window keeps no series of its own. The
+//! screen asks for them when it becomes visible, on reconnection, and every
+//! five seconds while it stays visible; never while another screen is shown.
 //!
 //! A device that is ready says so by the readings under it moving; the strip
 //! at the top speaks only for a device that is not.
 
-use gpui::{Context, Div, FontWeight, Hsla, SharedString, Stateful, div, prelude::*, px};
+use gpui::{Div, FontWeight, Hsla, SharedString, div, prelude::*, px};
 
+use kori_core::history::{HistoryMetric, HistoryReply, Summary};
 use kori_core::telemetry::{
-    HISTORY_WINDOW_MS, History, LIQUID_CRITICAL_C, MetricView, format_binary_bytes,
-    format_temperature,
+    LIQUID_CRITICAL_C, MetricView, format_binary_bytes, format_temperature,
 };
 
-use crate::components::chart::{
-    self, BarChart, Holes, Plotted, RadarAxis, RadarChart, RadarSeries, RadialGauge, Scale,
-    SeriesChart, SeriesStyle,
-};
+use crate::components::chart::{self, Plotted, RadialGauge, Scale, SeriesChart};
 use crate::components::{
     DeviceHealth, DeviceRow, Note, NoteLevel, eyebrow, panel_surface, section_title,
 };
+use crate::feed::{HistoryState, TREND_METRICS, TREND_STEP_S, TREND_WINDOW_S};
 use crate::link::DeviceSummary;
 use crate::shell::Shell;
 use crate::theme::{Color, DEGREE_C, DEVICE_LINE_HEIGHT, color, numeric_font, space, text};
 
 use super::{block, screen};
 
-/// Points a trend chart plots over the window: one per five seconds.
-const TREND_POINTS: usize = 180;
-/// Columns of the cooling chart: one per minute.
-const MINUTE_COLUMNS: usize = (HISTORY_WINDOW_MS / 60_000) as usize;
+/// Points the chart plots per series: one per five seconds over the window.
+pub const TREND_POINTS: usize = (TREND_WINDOW_S / TREND_STEP_S) as usize;
+/// What the chart says while the daemon has recorded less than one point.
+pub const HISTORY_STARTING: &str = "History starts with the background service.";
+/// What the chart says while no daemon answers.
+pub const HISTORY_UNREACHABLE: &str =
+    "No temperature history while the background service is not running.";
 /// Coolant temperature at the bottom of its dial: room temperature, about.
 const LIQUID_FLOOR_C: f32 = 20.0;
 /// Coolant temperature from which its dial turns to the warning color, ten
 /// degrees under the alert.
 const LIQUID_WARM_C: f32 = LIQUID_CRITICAL_C - 10.0;
-/// Chip temperature a radar spoke reads as its whole length.
-const CHIP_SPAN_C: f32 = 100.0;
 /// Memory occupancy from which its dial turns to the warning color.
 const MEMORY_HIGH_PERCENT: f32 = 90.0;
+
+/// The temperature chart, as the last `history` answer left it.
+///
+/// Built once per answer rather than per repaint: the reply is reduced here to
+/// the points the chart draws and their scale, so a render walks those points
+/// and nothing else.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Trend {
+    /// Nothing answered yet. The grid is drawn, with no line and no sentence.
+    Waiting,
+    /// The daemon has recorded less than one point.
+    Starting,
+    /// Points to draw: one series per [`TREND_METRICS`] entry, oldest first,
+    /// with the daemon's summary of the window beside each.
+    Drawn {
+        series: [Vec<Option<f32>>; 3],
+        summaries: [Option<Summary>; 3],
+        scale: Scale,
+    },
+    /// Why there is nothing to draw, in operator language.
+    Refused(String),
+}
+
+impl Trend {
+    pub fn from_state(state: &HistoryState) -> Self {
+        match state {
+            HistoryState::Answered(reply) => Self::from_reply(reply),
+            HistoryState::Refused(reason) => Self::Refused(reason.clone()),
+        }
+    }
+
+    /// Reduce one reply to what the chart draws.
+    ///
+    /// The `avg` array of each metric, and at most [`TREND_POINTS`] of it, the
+    /// newest: a reply carrying more than it was asked for is not a reason to
+    /// draw more than the chart has room for.
+    pub fn from_reply(reply: &HistoryReply) -> Self {
+        if reply.available_s < reply.step_s.max(1) {
+            return Self::Starting;
+        }
+        let points = |metric: HistoryMetric| -> Vec<Option<f32>> {
+            let Some(avg) = reply
+                .metrics
+                .get(&metric)
+                .and_then(|history| history.avg.as_ref())
+            else {
+                return vec![None; TREND_POINTS];
+            };
+            let skip = avg.len().saturating_sub(TREND_POINTS);
+            avg[skip..].to_vec()
+        };
+        let summary = |metric: HistoryMetric| {
+            reply
+                .metrics
+                .get(&metric)
+                .and_then(|history| history.summary)
+        };
+        let series = TREND_METRICS.map(points);
+        let summaries = TREND_METRICS.map(summary);
+        let readings: Vec<f32> = series.iter().flatten().flatten().copied().collect();
+        let scale = if readings.is_empty() {
+            default_scale()
+        } else {
+            Scale::nice(readings, 4, None)
+        };
+        Self::Drawn {
+            series,
+            summaries,
+            scale,
+        }
+    }
+
+    /// The daemon's summary of one metric over the window, when it has one.
+    fn summary(&self, index: usize) -> Option<&Summary> {
+        match self {
+            Self::Drawn { summaries, .. } => summaries.get(index)?.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+/// The axis an empty chart is drawn on.
+fn default_scale() -> Scale {
+    Scale::fixed(20.0, 80.0, 3)
+}
 
 /// The devices the monitoring strip still has to speak for.
 ///
@@ -86,8 +175,8 @@ fn readout(view: &MetricView<f32>, format: impl Fn(f32) -> String) -> String {
     view.copied().map_or_else(|| "--".to_string(), format)
 }
 
-/// One series of a legend: its key, its name, where it is now, and what the
-/// window says about it.
+/// One series of the legend: its key, its name, where it is now, and what the
+/// daemon says about the window.
 ///
 /// The value is in the text color and the series color stays on the key: a
 /// number never wears the color of its line.
@@ -95,7 +184,7 @@ fn legend_item(
     name: &'static str,
     key: Hsla,
     view: &MetricView<f32>,
-    history: &History,
+    summary: Option<&Summary>,
     format: impl Fn(f32) -> String,
 ) -> Div {
     let now = match (view.copied(), view.qualifier()) {
@@ -104,15 +193,9 @@ fn legend_item(
         (Some(value), None) => format(value),
         (None, None) => "--".to_string(),
     };
-    let window = chart::summarize(history).map_or_else(
+    let window = summary.map_or_else(
         || "No reading in this window".to_string(),
-        |summary| {
-            format!(
-                "Avg {}  Peak {}",
-                format(summary.average),
-                format(summary.peak)
-            )
-        },
+        |summary| format!("Avg {}  Peak {}", format(summary.avg), format(summary.max)),
     );
     div()
         .flex()
@@ -226,57 +309,15 @@ fn gauge(
     }
 }
 
-/// A radar point: a share of its limit, and its display value.
-type SpokeValue = Option<(f32, String)>;
-
-/// One spoke of the headroom radar: where its quantity is now, and the
-/// highest it went in the window, each as a share of its limit.
-fn spoke(
-    view: &MetricView<f32>,
-    history: &History,
-    share: fn(f32) -> f32,
-    format: fn(f32) -> String,
-) -> (SpokeValue, SpokeValue) {
-    let at = |value: f32| (share(value), format(value));
-    (
-        view.copied().map(at),
-        chart::summarize(history).map(|summary| at(summary.peak)),
-    )
-}
-
-/// The key of a radar series: no values of its own, since the axis labels and
-/// the tooltip carry them.
-fn radar_key(name: &'static str, key: Hsla) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(space::SM)
-        .child(
-            div()
-                .flex_none()
-                .w(px(12.0))
-                .h(px(2.0))
-                .rounded(px(1.0))
-                .bg(key),
-        )
-        .child(
-            div()
-                .text_size(text::LABEL_SM)
-                .text_color(color::TEXT_MUTED.hsla())
-                .child(name),
-        )
-}
-
-/// Repaint a chart while the pointer moves over it and once as it leaves, so
-/// its hover layer follows the pointer and goes away with it.
-fn hoverable(chart: Stateful<Div>, cx: &mut Context<Shell>) -> Stateful<Div> {
-    chart
-        .on_mouse_move(cx.listener(|_, _, _, cx| cx.notify()))
-        .on_hover(cx.listener(|_, _, _, cx| cx.notify()))
-}
+/// The series of the chart, in [`TREND_METRICS`] order: legend name and color.
+const TREND_SERIES: [(&str, Color); 3] = [
+    ("CPU package", color::SERIES_CPU),
+    ("GPU core", color::SERIES_GPU),
+    ("Coolant", color::SERIES_COOLANT),
+];
 
 impl Shell {
-    pub(crate) fn monitoring(&self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn monitoring(&self) -> Div {
         let now = self.now_unix_ms;
         let book = &self.metrics;
 
@@ -344,295 +385,92 @@ impl Shell {
                 )),
         );
 
-        let trend = |history: &History| {
-            chart::bucket(history, now, HISTORY_WINDOW_MS, TREND_POINTS, Holes::Keep)
-        };
-        let window_s = HISTORY_WINDOW_MS / 1_000;
-        let plotted = |name: &'static str, key: Color, values| Plotted {
-            name: SharedString::new_static(name),
-            color: key.hsla(),
-            values,
-        };
-
-        // Load: a share of capacity with a floor, so the area under the line
-        // is part of the reading.
-        let load_chart = SeriesChart::new(
-            "monitoring-load",
-            SeriesStyle::Area,
-            Scale::fixed(0.0, 100.0, 4),
-            window_s,
-        )
-        .series(plotted(
-            "CPU",
-            color::SERIES_CPU,
-            trend(book.cpu_load.history()),
-        ))
-        .series(plotted(
-            "GPU",
-            color::SERIES_GPU,
-            trend(book.gpu_load.history()),
-        ))
-        .format(percent, percent);
-        let load = panel_surface()
-            .child(hoverable(load_chart.render(), cx))
-            .child(legend([
-                legend_item(
-                    "CPU",
-                    color::SERIES_CPU.hsla(),
-                    &cpu_load,
-                    book.cpu_load.history(),
-                    percent,
-                ),
-                legend_item(
-                    "GPU",
-                    color::SERIES_GPU.hsla(),
-                    &gpu_load,
-                    book.gpu_load.history(),
-                    percent,
-                ),
-            ]));
-
-        // Temperatures: three lines close together on one scale, where washes
-        // would hide the one being followed.
-        let cpu_trend = trend(book.cpu_temperature.history());
-        let gpu_trend = trend(book.gpu_temperature.history());
-        let liquid_trend = trend(book.liquid.history());
-        let readings: Vec<f32> = [&cpu_trend, &gpu_trend, &liquid_trend]
-            .into_iter()
-            .flatten()
-            .flatten()
-            .copied()
-            .collect();
-        let temperature_scale = if readings.is_empty() {
-            Scale::fixed(20.0, 80.0, 3)
-        } else {
-            Scale::nice(readings, 4, None)
-        };
-        let temperature_chart = SeriesChart::new(
-            "monitoring-temperatures",
-            SeriesStyle::Line,
-            temperature_scale,
-            window_s,
-        )
-        .series(plotted("CPU", color::SERIES_CPU, cpu_trend))
-        .series(plotted("GPU", color::SERIES_GPU, gpu_trend))
-        .series(plotted("Coolant", color::SERIES_COOLANT, liquid_trend))
-        .format(|v| format!("{v:.0}\u{00b0}"), celsius);
         let temperatures = panel_surface()
-            .child(hoverable(temperature_chart.render(), cx))
-            .child(legend([
-                legend_item(
-                    "CPU package",
-                    color::SERIES_CPU.hsla(),
-                    &cpu_temperature,
-                    book.cpu_temperature.history(),
-                    celsius,
-                ),
-                legend_item(
-                    "GPU core",
-                    color::SERIES_GPU.hsla(),
-                    &gpu_temperature,
-                    book.gpu_temperature.history(),
-                    celsius,
-                ),
-                legend_item(
-                    "Coolant",
-                    color::SERIES_COOLANT.hsla(),
-                    &liquid,
-                    book.liquid.history(),
-                    celsius,
-                ),
-            ]));
+            .child(self.temperature_chart().render())
+            .child(legend(
+                [&cpu_temperature, &gpu_temperature, &liquid]
+                    .into_iter()
+                    .zip(TREND_SERIES)
+                    .enumerate()
+                    .map(|(index, (view, (name, key)))| {
+                        legend_item(name, key.hsla(), view, self.trend.summary(index), celsius)
+                    }),
+            ));
 
-        // Cooling response: a speed averaged per minute, compared minute by
-        // minute between the two channels.
-        let minutes = |history: &History| {
-            chart::bucket(
-                history,
-                now,
-                HISTORY_WINDOW_MS,
-                MINUTE_COLUMNS,
-                Holes::Average,
-            )
-        };
-        let pump_minutes = minutes(book.pump.rpm.history());
-        let fan_minutes = minutes(book.fan.rpm.history());
-        let speeds: Vec<f32> = pump_minutes
-            .iter()
-            .chain(&fan_minutes)
-            .flatten()
-            .copied()
-            .collect();
-        let speed_scale = if speeds.is_empty() {
-            Scale::fixed(0.0, 3_000.0, 3)
-        } else {
-            Scale::nice(speeds, 4, Some(0.0))
-        };
-        let cooling_chart = BarChart::new("monitoring-cooling", speed_scale, 60)
-            .series(plotted("Pump", color::SERIES_PUMP, pump_minutes))
-            .series(plotted("Fan", color::SERIES_FAN, fan_minutes))
-            .format(rpm);
-        let cooling = panel_surface()
-            .child(hoverable(cooling_chart.render(), cx))
-            .child(legend([
-                legend_item(
-                    "Pump",
-                    color::SERIES_PUMP.hsla(),
-                    &pump,
-                    book.pump.rpm.history(),
-                    rpm,
-                ),
-                legend_item(
-                    "Fan",
-                    color::SERIES_FAN.hsla(),
-                    &fan,
-                    book.fan.rpm.history(),
-                    rpm,
-                ),
-            ]));
-
-        // Headroom: every share of capacity at once, now against the peak of
-        // the window, so the one closest to its limit stands out as a shape.
-        let spokes = [
-            (
-                "CPU load",
-                spoke(&cpu_load, book.cpu_load.history(), |v| v / 100.0, percent),
-            ),
-            (
-                "CPU temp",
-                spoke(
-                    &cpu_temperature,
-                    book.cpu_temperature.history(),
-                    |v| v / CHIP_SPAN_C,
-                    celsius,
-                ),
-            ),
-            (
-                "GPU load",
-                spoke(&gpu_load, book.gpu_load.history(), |v| v / 100.0, percent),
-            ),
-            (
-                "GPU temp",
-                spoke(
-                    &gpu_temperature,
-                    book.gpu_temperature.history(),
-                    |v| v / CHIP_SPAN_C,
-                    celsius,
-                ),
-            ),
-            (
-                "Memory",
-                spoke(
-                    &memory_percent,
-                    book.memory_percent.history(),
-                    |v| v / 100.0,
-                    percent,
-                ),
-            ),
-            (
-                "Coolant",
-                spoke(&liquid, book.liquid.history(), liquid_share, celsius),
-            ),
-        ];
-        let radar = RadarChart::new(
-            "monitoring-headroom",
-            spokes
-                .iter()
-                .map(|(label, ..)| RadarAxis {
-                    label: SharedString::new_static(label),
-                })
-                .collect(),
+        screen(
+            "Monitoring",
+            "The current state, and the temperatures over the last 15 minutes.",
         )
-        .series(RadarSeries {
-            name: "Now".into(),
-            color: color::ACCENT.hsla(),
-            wash: 0.15,
-            stroke: px(2.0),
-            markers: true,
-            points: spokes.iter().map(|(_, (now, _))| now.clone()).collect(),
-        })
-        .series(RadarSeries {
-            name: "Peak, 15 min".into(),
-            color: color::TEXT_MUTED.hsla(),
-            wash: 0.08,
-            stroke: px(1.5),
-            markers: false,
-            points: spokes.iter().map(|(_, (_, peak))| peak.clone()).collect(),
-        });
-        let headroom = panel_surface().child(hoverable(radar.render(), cx)).child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_x(space::XL)
-                .gap_y(space::XS)
-                .child(radar_key("Now", color::ACCENT.hsla()))
-                .child(radar_key(
-                    "Peak in the last 15 minutes",
-                    color::TEXT_MUTED.hsla(),
-                )),
-        );
-
-        let gpu_description = match book.gpu_name.view(now).value() {
-            Some(name) => format!(
-                "CPU and GPU utilization. GPU: {name}, read through {}.",
-                self.gpu_source()
-            ),
-            None => "CPU and GPU utilization. No GPU management interface answered.".to_string(),
-        };
-
-        screen("Monitoring", "Load, temperatures and cooling over the last 15 minutes.")
-            .children(self.device_strip())
-            .children(self.link.failed_collectors().iter().map(|failure| {
-                Note::new(
-                    NoteLevel::Warning,
-                    format!("{}: {}", failure.collector.label(), failure.detail),
-                )
-                .render()
-            }))
-            .child(block(eyebrow("Overview"), overview))
-            .child(block(section_title("Load", Some(gpu_description.into())), load))
-            .child(block(
-                section_title(
-                    "Temperatures",
-                    Some("CPU package, GPU core and the coolant in the loop.".into()),
-                ),
-                temperatures,
-            ))
-            .child(block(
-                section_title(
-                    "Cooling response",
-                    Some("Average pump and fan speed per minute.".into()),
-                ),
-                cooling,
-            ))
-            .child(block(
-                section_title(
-                    "Headroom",
-                    Some(
-                        "Each spoke is a share of its limit: 100% load, 100 \u{00b0}C on a chip, 60 \u{00b0}C on the coolant."
-                            .into(),
-                    ),
-                ),
-                headroom,
-            ))
-            .child(
-                div()
-                    .px(px(2.0))
-                    .text_size(text::LABEL_SM)
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child(format!(
-                        "Rolling {} minute window, held in memory only.",
-                        HISTORY_WINDOW_MS / 60_000
-                    )),
+        .children(self.device_strip())
+        .children(self.link.failed_collectors().iter().map(|failure| {
+            Note::new(
+                NoteLevel::Warning,
+                format!("{}: {}", failure.collector.label(), failure.detail),
             )
+            .render()
+        }))
+        .child(block(eyebrow("Overview"), overview))
+        .child(block(
+            section_title(
+                "Temperatures",
+                Some("CPU package, GPU core and the coolant in the loop.".into()),
+            ),
+            temperatures,
+        ))
+        .child(
+            div()
+                .px(px(2.0))
+                .text_size(text::LABEL_SM)
+                .text_color(color::TEXT_MUTED.hsla())
+                .child(
+                    "Recorded by the background service in memory only. \
+                     It restarts empty with the service.",
+                ),
+        )
     }
 
-    /// The interface NVML or its absence is reported under.
-    fn gpu_source(&self) -> String {
-        self.link
-            .telemetry()
-            .map(|snapshot| snapshot.gpu.source.clone())
-            .unwrap_or_else(|| "no interface".to_string())
+    /// What the chart area says instead of a line, when it says anything.
+    ///
+    /// Nothing while the first answer is on its way: the grid alone is the
+    /// honest picture of a question not answered yet.
+    pub(crate) fn chart_message(&self) -> Option<SharedString> {
+        if self.link.status().is_none() {
+            return Some(HISTORY_UNREACHABLE.into());
+        }
+        match &self.trend {
+            Trend::Starting => Some(HISTORY_STARTING.into()),
+            Trend::Refused(reason) => Some(reason.clone().into()),
+            Trend::Waiting | Trend::Drawn { .. } => None,
+        }
+    }
+
+    /// The chart as the last answer left it, or the reason there is none.
+    ///
+    /// A daemon that is not answering outranks whatever the last reply drew:
+    /// the dials go to their disconnected state, and the chart says why it
+    /// stopped rather than holding a trend nothing is extending.
+    fn temperature_chart(&self) -> SeriesChart {
+        let chart = |scale| {
+            SeriesChart::new("monitoring-temperatures", scale, u64::from(TREND_WINDOW_S))
+                .format(|v| format!("{v:.0}\u{00b0}"))
+        };
+        if let Some(message) = self.chart_message() {
+            return chart(default_scale()).empty(message);
+        }
+        match &self.trend {
+            Trend::Waiting | Trend::Starting | Trend::Refused(_) => chart(default_scale()),
+            Trend::Drawn { series, scale, .. } => {
+                let mut drawn = chart(scale.clone());
+                for (values, (name, key)) in series.iter().zip(TREND_SERIES) {
+                    drawn = drawn.series(Plotted {
+                        name: SharedString::new_static(name),
+                        color: key.hsla(),
+                        values: values.clone(),
+                    });
+                }
+                drawn
+            }
+        }
     }
 
     /// Which hardware answered, as a caption under the screen heading.

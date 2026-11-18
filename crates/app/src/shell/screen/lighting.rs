@@ -20,6 +20,7 @@ use crate::components::{ControlState, Note, NoteLevel, SelectOption, eyebrow, ro
 use crate::feed::{Command, CommandSubject};
 use crate::lighting::LightingMode;
 use crate::shell::Shell;
+use crate::shell::sync::Domain;
 use crate::theme::{color, space, text};
 use gpui::Context;
 
@@ -426,13 +427,13 @@ impl Shell {
     /// daemon's own deduplication, which still runs and is still the authority.
     /// It is what keeps an edit that lands back on the current value from
     /// costing a request, a reply and a polling cycle.
-    pub(crate) fn send_lighting(&mut self, channel: u8) {
+    pub(crate) fn send_lighting(&mut self, channel: u8) -> bool {
         let Some(program) = self
             .lighting
             .channel(channel)
             .and_then(|editor| editor.program().ok())
         else {
-            return;
+            return false;
         };
         let committed = self
             .link
@@ -441,10 +442,13 @@ impl Shell {
             .find(|state| state.channel == channel)
             .and_then(|state| state.committed.as_ref());
         if committed == Some(&program) {
-            return;
+            return false;
         }
-        self.feed
-            .send(Command::ApplyLighting(LightingCommand { channel, program }));
+        self.feed.send(Command::ApplyLighting {
+            command: LightingCommand { channel, program },
+            expect_revision: self.expected_revision(Domain::Lighting(channel)),
+        });
+        true
     }
 }
 

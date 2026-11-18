@@ -184,18 +184,21 @@ pub mod color {
     /// The entities the Monitoring charts plot, one hue each.
     ///
     /// Color follows the entity, never its rank: the CPU is this teal in every
-    /// chart that draws it. The five are the dark-mode categorical steps,
-    /// held inside the OKLCH lightness band 0.48 to 0.67 so none of them shouts
+    /// chart that draws it. The three are dark-mode categorical steps, held
+    /// inside the OKLCH lightness band 0.48 to 0.67 so none of them shouts
     /// over the others, and run through the dataviz validator on the card
-    /// surface: the three that share the temperature chart clear every
-    /// all-pairs check (worst CVD separation 13.0, worst normal-vision 19.9),
-    /// as do the two that share the cooling chart (15.9 and 26.5). The CPU
+    /// surface: together on the temperature chart they clear every all-pairs
+    /// check (worst CVD separation 13.0, worst normal-vision 19.9). The CPU
     /// teal is [`ACCENT`] stepped down into that band.
     pub const SERIES_CPU: Color = Color::rgb(0x35a898);
     pub const SERIES_GPU: Color = Color::rgb(0xd95926);
     pub const SERIES_COOLANT: Color = Color::rgb(0x9085e9);
-    pub const SERIES_PUMP: Color = Color::rgb(0x3987e5);
-    pub const SERIES_FAN: Color = Color::rgb(0xd55181);
+    /// "Changed by ..." under a control another client changed.
+    ///
+    /// Not a warning: nothing is wrong, someone else acted. A blue apart from
+    /// the solid action blue and the focus ring, light enough to read as
+    /// body-sized text on a card and on a lit row.
+    pub const EXTERNAL_CHANGE: Color = Color::rgb(0x7ab8ff);
     /// A gridline: one step off the card, solid, recessive.
     pub const GRID: Color = Color::rgb(0x303030);
     /// The overview dials' fill, from the foot of the sweep to the head of
@@ -564,13 +567,7 @@ mod tests {
 
     #[test]
     fn every_chart_series_is_a_visible_mark_on_the_card() {
-        for series in [
-            SERIES_CPU,
-            SERIES_GPU,
-            SERIES_COOLANT,
-            SERIES_PUMP,
-            SERIES_FAN,
-        ] {
+        for series in [SERIES_CPU, SERIES_GPU, SERIES_COOLANT] {
             let ratio = series.contrast(PANEL);
             assert!(ratio >= NON_TEXT_MIN, "{series:?} on PANEL is {ratio:.2}:1");
         }
@@ -586,6 +583,27 @@ mod tests {
         let band = kori_core::display::DisplayPreset::default_infographic().readings[0];
         assert_eq!(Color::from(band.reading), GAUGE_FOOT);
         assert_eq!(Color::from(band.band_end()), GAUGE_HEAD);
+    }
+
+    /// The notice is text, so it is held to the text bar on the card and on
+    /// the washes a row lights it with.
+    #[test]
+    fn the_external_change_notice_reads_as_text_wherever_it_sits() {
+        for surface in [
+            SURFACE,
+            PANEL,
+            washed(PANEL, WASH_HOVER),
+            washed(PANEL, WASH_SELECTED),
+        ] {
+            let ratio = EXTERNAL_CHANGE.contrast(surface);
+            assert!(
+                ratio >= TEXT_MIN,
+                "EXTERNAL_CHANGE on {surface:?} is {ratio:.2}:1"
+            );
+        }
+        assert_ne!(EXTERNAL_CHANGE, SOLID);
+        assert_ne!(EXTERNAL_CHANGE, FOCUS);
+        assert_ne!(EXTERNAL_CHANGE, WARNING);
     }
 
     #[test]

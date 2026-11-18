@@ -352,6 +352,12 @@ impl DisplayScreen {
         self.picture.advance()
     }
 
+    /// Put the preview on the frame `elapsed` into the animation, and return
+    /// how long that frame still stays up. `None` when nothing is playing.
+    pub fn seek_film(&mut self, elapsed: std::time::Duration) -> Option<std::time::Duration> {
+        self.picture.film_mut()?.seek(elapsed)
+    }
+
     /// The generation a newly armed animation timer belongs to.
     ///
     /// Every call takes a fresh one and every timer carries the one it was
@@ -820,6 +826,29 @@ mod tests {
             first,
             "three steps through three frames is back where it started"
         );
+    }
+
+    /// The preview resumes on the frame the glass shows: the daemon walks the
+    /// same delays on the wall clock from the instant it started.
+    #[test]
+    fn seeking_lands_on_the_frame_the_elapsed_time_names() {
+        let (mut screen, path) = screen_showing("seek", 3);
+        screen.sync_picture(Some(&panel()), None);
+        let film = screen.film().unwrap().clone();
+        let delay = film.delay().unwrap();
+        let total = film.duration();
+        assert_eq!(total, delay * 3, "the fixture gives every frame one delay");
+
+        assert_eq!(screen.seek_film(std::time::Duration::ZERO), Some(delay));
+        let first = screen.picture().unwrap().to_vec();
+        let remaining = screen.seek_film(delay + delay / 2).unwrap();
+        assert_eq!(remaining, delay - delay / 2);
+        let second = screen.picture().unwrap().to_vec();
+        assert_ne!(first, second, "half way into the second frame shows it");
+        // A whole pass later the animation is back where it was.
+        screen.seek_film(total + delay + delay / 2);
+        assert_eq!(screen.picture().unwrap(), second.as_slice());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

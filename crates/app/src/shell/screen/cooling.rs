@@ -13,7 +13,7 @@ use gpui::{Div, Pixels, Stateful, div, prelude::*, px};
 use kori_core::KRAKEN_BASE;
 use kori_core::capability::CapabilityId;
 use kori_core::lighting::LightingCommand;
-use kori_core::profile::{Channel, CoolingProgram, Profile, SAFE_PROFILE_NAME};
+use kori_core::profile::{Channel, Profile, SAFE_PROFILE_NAME};
 
 use crate::components::{
     Button, ButtonVariant, ControlState, Note, NoteLevel, SelectOption, eyebrow, row_panel,
@@ -24,7 +24,6 @@ use crate::shell::Shell;
 use gpui::Context;
 use std::time::Instant;
 
-use super::drag::Drag;
 use crate::theme::{RADIUS, color, space, text};
 
 use super::tab::{
@@ -32,6 +31,7 @@ use super::tab::{
 };
 use super::write::{COOLING_QUIET, WriteTarget};
 use super::{SelectField, SelectId, block, screen, setting_card, setting_line};
+use crate::shell::sync::Domain;
 
 /// Width of the two selects on the program card.
 ///
@@ -75,28 +75,6 @@ fn write_status() -> Div {
                 .text_color(color::TEXT_MUTED.hsla())
                 .child("Saving. The hardware holds its previous program until this clears."),
         )
-}
-/// The committed program a fresh status should put in the editor, if any.
-///
-/// Free and pure, for the same reason [`super::write::write_is_held_back`] is.
-/// `seen` is what the last adoption took, so a status repeating itself adopts
-/// nothing and a screen the operator is reading does not twitch once a second.
-///
-/// Nothing is adopted while an edit is in flight: a write waiting out its quiet
-/// period, a gesture still running, or a command whose outcome has not come back
-/// is the operator's intent, and what the daemon committed is the state that
-/// intent is about to replace. A refused edit stays on screen by the same rule,
-/// since a refusal changes nothing the daemon has committed.
-pub fn program_to_adopt(
-    committed: Option<&CoolingProgram>,
-    seen: Option<&CoolingProgram>,
-    editing: bool,
-) -> Option<CoolingProgram> {
-    let committed = committed?;
-    if editing || seen == Some(committed) {
-        return None;
-    }
-    Some(committed.clone())
 }
 /// State of the delete control for the currently active profile.
 ///
@@ -237,6 +215,10 @@ impl Shell {
             ]),
         ));
 
+        // Who changed the program, when it was not this window, under the
+        // card that holds it.
+        surface = surface.children(self.change_notice(Domain::Cooling));
+
         for alert in self.link.alerts() {
             surface = surface.child(Note::new(NoteLevel::Critical, alert.message()).render());
         }
@@ -339,35 +321,13 @@ impl Shell {
         cx.notify();
     }
 
-    /// Put the daemon's committed program in the editor when it changes.
-    ///
-    /// This is what makes the Cooling screen open on the machine as it is
-    /// rather than on the factory arrangement, and what shows the curve of a
-    /// profile the operator just activated: an activation is the daemon
-    /// committing a program like any other, so one rule covers both.
-    pub(crate) fn adopt_committed_program(&mut self) {
-        let editing = self.interaction.drag().is_some_and(Drag::is_cooling)
-            || self.due.is_pending(WriteTarget::Cooling)
-            || self.sent.is_some();
-        let Some(program) = program_to_adopt(
-            self.link
-                .status()
-                .and_then(|status| status.cooling.committed.as_ref()),
-            self.committed.as_ref(),
-            editing,
-        ) else {
-            return;
-        };
-        self.cooling.adopt(&program);
-        self.committed = Some(program);
-    }
-
     /// Note that the cooling edit changed, without spawning a timer.
     ///
     /// Used by the moves inside a drag: they arrive by the dozen and only the
     /// one the operator stops on is worth writing, so they push the deadline
     /// out and let the release schedule the write.
     pub(crate) fn touch_cooling(&mut self) {
+        self.revisions.edited(Domain::Cooling);
         self.due
             .touch(WriteTarget::Cooling, Instant::now() + COOLING_QUIET);
     }
@@ -377,13 +337,20 @@ impl Shell {
     ///
     /// Silent when there is nothing to write or nothing the daemon would
     /// accept: a refusal is already on screen in both cases.
-    pub(crate) fn send_cooling(&mut self) {
+    ///
+    /// The write expects the revision the editor was built from, so a change
+    /// another client made since is refused rather than written over.
+    pub(crate) fn send_cooling(&mut self) -> bool {
         if !self.cooling.pending(self.kraken()) || self.cooling.validation_error().is_some() {
-            return;
+            return false;
         }
         let program = self.cooling.program();
         self.sent = Some(program.clone());
-        self.feed.send(Command::Apply(program));
+        self.feed.send(Command::Apply {
+            program,
+            expect_revision: self.expected_revision(Domain::Cooling),
+        });
+        true
     }
 
     /// Store the pending state of the whole machine under a generated name.
@@ -461,40 +428,6 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_committed_program_is_adopted_once_and_never_over_an_edit() {
-        let committed = CoolingProgram::Fixed { pump: 180, fan: 90 };
-        let other = CoolingProgram::Fixed { pump: 200, fan: 90 };
-
-        assert_eq!(
-            program_to_adopt(Some(&committed), None, false),
-            Some(committed.clone()),
-            "a window opening on a running machine takes what it is running"
-        );
-        assert_eq!(
-            program_to_adopt(Some(&committed), Some(&committed), false),
-            None,
-            "a status repeating itself must not redraw the screen every second"
-        );
-        assert_eq!(
-            program_to_adopt(Some(&other), Some(&committed), false),
-            Some(other.clone()),
-            "activating a profile is the daemon committing a program, and the \
-             plot has to follow it"
-        );
-        assert_eq!(
-            program_to_adopt(Some(&other), Some(&committed), true),
-            None,
-            "an edit in flight is the operator's intent, and it outranks the \
-             state that intent is about to replace"
-        );
-        assert_eq!(
-            program_to_adopt(None, Some(&committed), false),
-            None,
-            "a daemon that has committed nothing says nothing about the plot"
-        );
-    }
 
     #[test]
     fn deleting_a_profile_takes_two_deliberate_activations() {

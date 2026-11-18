@@ -104,6 +104,15 @@ impl WriteSchedule {
         self.due.take(|deadline| *deadline <= now)
     }
 
+    /// Drop the pending write for `target`, if there is one.
+    ///
+    /// For an edit the daemon refused with `conflict`: another client wrote
+    /// first, the window adopts what it wrote, and the abandoned edit must not
+    /// be sent a second time over it.
+    pub fn cancel(&mut self, target: WriteTarget) {
+        self.due.remove(target);
+    }
+
     /// Whether anything is waiting to be written for `target`.
     pub fn is_pending(&self, target: WriteTarget) -> bool {
         self.due.contains(target)

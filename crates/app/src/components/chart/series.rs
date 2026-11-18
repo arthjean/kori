@@ -1,35 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! A trend over time: shadcn's area and line charts.
+//! A trend over time: shadcn's line chart.
 
 use std::rc::Rc;
 
 use gpui::{
-    Bounds, Div, FontWeight, HitboxBehavior, PathBuilder, Pixels, SharedString, Stateful, Window,
-    canvas, div, point, prelude::*, px,
+    Bounds, Div, FontWeight, PathBuilder, Pixels, SharedString, Stateful, Window, canvas, div,
+    point, prelude::*, px,
 };
 
 use crate::theme::{color, numeric_font, text};
 
-use super::{
-    Plotted, Scale, TooltipRow, ago, hairline, line_height, marker, measure, paint_text,
-    paint_tooltip, ui_font,
-};
+use super::{Plotted, Scale, hairline, line_height, marker, measure, paint_text, ui_font};
 
-/// How the series of a chart are drawn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SeriesStyle {
-    /// A line over a wash of its own color: for a quantity with a floor, where
-    /// the area under the line is part of what it says, such as a load.
-    Area,
-    /// Lines alone: for series that sit close together on one scale, where
-    /// overlapping washes would muddy the one the reader is following.
-    Line,
-}
-
-/// Opacity of the wash under a line: the dataviz tenth.
-const AREA_WASH: f32 = 0.10;
 /// Height of the plot, axis bands included.
 const CHART_HEIGHT: Pixels = px(184.0);
 /// Height of the band under the plot the time labels sit in.
@@ -37,36 +21,36 @@ const X_AXIS_BAND: Pixels = px(22.0);
 /// Gap between the tick labels and the plot.
 const Y_AXIS_GAP: Pixels = px(8.0);
 
-/// Several series over the same window, on one value axis.
+/// Several series over the same window, on one value axis, as lines.
 ///
 /// One axis only: two quantities of different units never share a plot, they
-/// get a chart each. The values are already bucketed by time, oldest first,
-/// with the last bucket ending now.
+/// get a chart each. The values are already one per point, oldest first, with
+/// the last one ending now. Lines alone, without washes: the series sit close
+/// together on one scale, and overlapping washes would muddy the one the reader
+/// is following.
+///
+/// The canvas takes no hitbox and reads no pointer, so moving the pointer over
+/// a chart changes nothing it paints and asks for no repaint.
 pub struct SeriesChart {
     id: SharedString,
-    style: SeriesStyle,
     series: Vec<Plotted>,
     scale: Scale,
     window_s: u64,
     tick: Rc<dyn Fn(f32) -> String>,
-    value: Rc<dyn Fn(f32) -> String>,
+    /// A sentence painted over an empty plot, when there is something to say
+    /// about why it is empty.
+    empty: Option<SharedString>,
 }
 
 impl SeriesChart {
-    pub fn new(
-        id: impl Into<SharedString>,
-        style: SeriesStyle,
-        scale: Scale,
-        window_s: u64,
-    ) -> Self {
+    pub fn new(id: impl Into<SharedString>, scale: Scale, window_s: u64) -> Self {
         Self {
             id: id.into(),
-            style,
             series: Vec::new(),
             scale,
             window_s,
             tick: Rc::new(super::grouped),
-            value: Rc::new(super::grouped),
+            empty: None,
         }
     }
 
@@ -75,39 +59,38 @@ impl SeriesChart {
         self
     }
 
-    /// How an axis tick and a tooltip value are written.
-    pub fn format(
-        mut self,
-        tick: impl Fn(f32) -> String + 'static,
-        value: impl Fn(f32) -> String + 'static,
-    ) -> Self {
+    /// How an axis tick is written.
+    pub fn format(mut self, tick: impl Fn(f32) -> String + 'static) -> Self {
         self.tick = Rc::new(tick);
-        self.value = Rc::new(value);
+        self
+    }
+
+    /// Say why the plot holds no line. The grid is still drawn under it, so
+    /// the chart keeps its place and its scale while it waits.
+    pub fn empty(mut self, message: impl Into<SharedString>) -> Self {
+        self.empty = Some(message.into());
         self
     }
 
     pub fn render(self) -> Stateful<Div> {
         let chart = Rc::new(self);
         let id = chart.id.clone();
-        div().id(id).w_full().h(CHART_HEIGHT).child(
-            canvas(
-                |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-                move |bounds, hitbox, window, cx| {
-                    let pointer = hitbox.is_hovered(window).then(|| window.mouse_position());
-                    chart.paint(bounds, pointer, window, cx);
-                },
+        let selector = id.to_string();
+        div()
+            .id(id)
+            .debug_selector(move || selector)
+            .w_full()
+            .h(CHART_HEIGHT)
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| chart.paint(bounds, window, cx),
+                )
+                .size_full(),
             )
-            .size_full(),
-        )
     }
 
-    fn paint(
-        &self,
-        bounds: Bounds<Pixels>,
-        pointer: Option<gpui::Point<Pixels>>,
-        window: &mut Window,
-        cx: &mut gpui::App,
-    ) {
+    fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut gpui::App) {
         let tick_font = numeric_font();
         let gutter = self
             .scale
@@ -162,67 +145,7 @@ impl SeriesChart {
                 tick_font.clone(),
             );
         }
-
-        let count = self
-            .series
-            .iter()
-            .map(|series| series.values.len())
-            .max()
-            .unwrap_or(0);
-        if count < 2 {
-            return;
-        }
-        let x_of =
-            |index: usize| plot.origin.x + plot.size.width * (index as f32 / (count - 1) as f32);
         let baseline = plot.origin.y + plot.size.height;
-
-        // Every wash before any line, so no line is dimmed by a neighbor's fill.
-        if self.style == SeriesStyle::Area {
-            for series in &self.series {
-                for (first, last) in runs(&series.values) {
-                    if first == last {
-                        continue;
-                    }
-                    let mut builder = PathBuilder::fill();
-                    builder.move_to(point(x_of(first), baseline));
-                    for index in first..=last {
-                        if let Some(value) = series.values[index] {
-                            builder.line_to(point(x_of(index), y_of(value)));
-                        }
-                    }
-                    builder.line_to(point(x_of(last), baseline));
-                    builder.close();
-                    if let Ok(path) = builder.build() {
-                        window.paint_path(path, series.color.opacity(AREA_WASH));
-                    }
-                }
-            }
-        }
-        for series in &self.series {
-            for (first, last) in runs(&series.values) {
-                if first == last {
-                    // A lone reading between two holes is still a reading.
-                    if let Some(value) = series.values[first] {
-                        marker(window, point(x_of(first), y_of(value)), series.color);
-                    }
-                    continue;
-                }
-                let mut builder = PathBuilder::stroke(px(2.0));
-                for index in first..=last {
-                    if let Some(value) = series.values[index] {
-                        let at = point(x_of(index), y_of(value));
-                        if index == first {
-                            builder.move_to(at);
-                        } else {
-                            builder.line_to(at);
-                        }
-                    }
-                }
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, series.color);
-                }
-            }
-        }
 
         // The time axis: the window's start, two steps between, and now.
         let label_font = ui_font(FontWeight::NORMAL);
@@ -250,41 +173,60 @@ impl SeriesChart {
             );
         }
 
-        // The hover layer: the crosshair snaps to the nearest bucket, and one
-        // tooltip reads every series there.
-        let Some(pointer) = pointer.filter(|pointer| plot.contains(pointer)) else {
+        if let Some(message) = &self.empty {
+            let width = measure(window, message, text::BODY, label_font.clone());
+            paint_text(
+                window,
+                cx,
+                message,
+                point(
+                    plot.origin.x + (plot.size.width - width).max(px(0.0)) / 2.0,
+                    plot.origin.y + (plot.size.height - line_height(text::BODY)) / 2.0,
+                ),
+                text::BODY,
+                color::TEXT_MUTED.hsla(),
+                label_font,
+            );
             return;
-        };
-        let across = (pointer.x - plot.origin.x) / plot.size.width;
-        let index = (across * (count - 1) as f32).round() as usize;
-        let x = x_of(index);
-        hairline(
-            window,
-            point(x, plot.origin.y),
-            point(x, baseline),
-            color::TEXT.alpha(0.3),
-        );
-        let mut rows = Vec::with_capacity(self.series.len());
-        for series in &self.series {
-            let value = series.values.get(index).copied().flatten();
-            if let Some(value) = value {
-                marker(window, point(x, y_of(value)), series.color);
-            }
-            rows.push(TooltipRow {
-                key: series.color,
-                value: value.map_or_else(|| "No reading".to_string(), |value| (self.value)(value)),
-                label: series.name.to_string(),
-            });
         }
-        let seconds_ago = self.window_s * (count - 1 - index) as u64 / (count - 1) as u64;
-        paint_tooltip(
-            window,
-            cx,
-            plot,
-            point(x, pointer.y),
-            &ago(seconds_ago),
-            &rows,
-        );
+
+        let count = self
+            .series
+            .iter()
+            .map(|series| series.values.len())
+            .max()
+            .unwrap_or(0);
+        if count < 2 {
+            return;
+        }
+        let x_of =
+            |index: usize| plot.origin.x + plot.size.width * (index as f32 / (count - 1) as f32);
+
+        for series in &self.series {
+            for (first, last) in runs(&series.values) {
+                if first == last {
+                    // A lone reading between two holes is still a reading.
+                    if let Some(value) = series.values[first] {
+                        marker(window, point(x_of(first), y_of(value)), series.color);
+                    }
+                    continue;
+                }
+                let mut builder = PathBuilder::stroke(px(2.0));
+                for index in first..=last {
+                    if let Some(value) = series.values[index] {
+                        let at = point(x_of(index), y_of(value));
+                        if index == first {
+                            builder.move_to(at);
+                        } else {
+                            builder.line_to(at);
+                        }
+                    }
+                }
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, series.color);
+                }
+            }
+        }
     }
 }
 

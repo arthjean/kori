@@ -6,8 +6,8 @@
 //! Everything here is downstream of the readings rather than part of them. A
 //! [`Reading`] is what one collector produced in one pass; a [`MetricView`] is
 //! what a readout shows now, which depends on how long ago that pass was.
-//! [`Tracked`] holds the difference and [`History`] keeps the bounded series a
-//! chart plots.
+//! [`Tracked`] holds the difference. The series a chart plots are the daemon's,
+//! recorded by tick in `kori_core::history` and read with a `history` request.
 //!
 //! Nothing in this module derives `Serialize`, and that is the seam it was
 //! split along rather than a detail: none of it crosses the socket. The daemon
@@ -17,8 +17,6 @@
 //! into the characters drawn next to it, which is presentation and not
 //! measurement.
 
-use std::collections::VecDeque;
-
 use super::{Reading, Unavailable};
 
 /// Age at which a retained value is presented as stale.
@@ -26,11 +24,6 @@ pub const STALE_AFTER_MS: u64 = 2_000;
 
 /// Age at which a retained value is dropped rather than shown stale.
 pub const DROP_AFTER_MS: u64 = 10_000;
-
-/// Longest history the product keeps, in milliseconds.
-///
-/// Fifteen minutes, in memory, and no history database anywhere.
-pub const HISTORY_WINDOW_MS: u64 = 15 * 60 * 1_000;
 
 /// How a retained metric currently presents.
 #[derive(Debug, Clone, PartialEq)]
@@ -132,14 +125,13 @@ impl<T: Clone> Tracked<T> {
 
     /// Fold one reading in, stamped with the time it was sampled.
     ///
-    /// A sample older than the one already held is ignored, for the reason
-    /// [`History::push`] ignores one: the stamps come from a wall clock, and a
-    /// clock that steps backwards must not be read as a fresher measurement. It
-    /// is the more dangerous of the two here, because the stamp is what
-    /// [`Tracked::view`] ages against: one sample landing far enough ahead of
-    /// the clock would hold the metric at [`MetricView::Fresh`] for as long as
-    /// it took real time to catch up, and a frozen readout that never says
-    /// `Stale` is exactly the reading this module refuses to show.
+    /// A sample older than the one already held is ignored: the stamps come
+    /// from a wall clock, and a clock that steps backwards must not be read as
+    /// a fresher measurement. The stamp is what [`Tracked::view`] ages
+    /// against, so one sample landing far enough ahead of the clock would hold
+    /// the metric at [`MetricView::Fresh`] for as long as it took real time to
+    /// catch up, and a frozen readout that never says `Stale` is exactly the
+    /// reading this module refuses to show.
     pub fn observe(&mut self, reading: &Reading<T>, at_unix_ms: u64) {
         match reading {
             Reading::Valid { value } => {
@@ -179,76 +171,6 @@ impl<T: Clone> Tracked<T> {
                 value: value.clone(),
             }
         }
-    }
-}
-
-/// One charted point. `None` marks a gap the chart must draw as a gap.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HistoryPoint {
-    pub at_unix_ms: u64,
-    pub value: Option<f32>,
-}
-
-/// A bounded in-memory series.
-///
-/// Nothing older than the window is kept, and nothing is written
-/// anywhere. The deque is pruned by timestamp, so a sampler that stalls cannot
-/// leave a series longer than the window either.
-#[derive(Debug, Clone)]
-pub struct History {
-    points: VecDeque<HistoryPoint>,
-    window_ms: u64,
-}
-
-impl Default for History {
-    fn default() -> Self {
-        Self::new(HISTORY_WINDOW_MS)
-    }
-}
-
-impl History {
-    pub fn new(window_ms: u64) -> Self {
-        Self {
-            points: VecDeque::new(),
-            window_ms: window_ms.max(1),
-        }
-    }
-
-    pub fn window_ms(&self) -> u64 {
-        self.window_ms
-    }
-
-    /// Append a point and drop everything outside the window.
-    ///
-    /// A point older than the newest one is ignored: a clock that jumps
-    /// backwards must not reorder the series.
-    pub fn push(&mut self, at_unix_ms: u64, value: Option<f32>) {
-        if let Some(last) = self.points.back()
-            && at_unix_ms < last.at_unix_ms
-        {
-            return;
-        }
-        self.points.push_back(HistoryPoint { at_unix_ms, value });
-        let cutoff = at_unix_ms.saturating_sub(self.window_ms);
-        while self
-            .points
-            .front()
-            .is_some_and(|point| point.at_unix_ms < cutoff)
-        {
-            self.points.pop_front();
-        }
-    }
-
-    pub fn points(&self) -> impl Iterator<Item = &HistoryPoint> {
-        self.points.iter()
-    }
-
-    pub fn len(&self) -> usize {
-        self.points.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.points.is_empty()
     }
 }
 
@@ -348,28 +270,7 @@ mod tests {
         assert_eq!(tracked.view(0).qualifier(), Some("N/A"));
     }
 
-    #[test]
-    fn history_keeps_only_the_window_and_records_gaps() {
-        let mut history = History::new(10_000);
-        for step in 0..20u64 {
-            let at = step * 1_000;
-            history.push(at, if step == 5 { None } else { Some(step as f32) });
-        }
-
-        assert!(history.len() <= 11, "{} points retained", history.len());
-        let oldest = history.points().next().unwrap();
-        assert!(oldest.at_unix_ms >= 19_000 - 10_000);
-        // The gap survives pruning as an explicit hole, not as a zero.
-        let mut history = History::new(10_000);
-        history.push(0, Some(1.0));
-        history.push(1_000, None);
-        history.push(2_000, Some(3.0));
-        assert_eq!(history.points().filter(|p| p.value.is_none()).count(), 1);
-        assert_eq!(history.len(), 3);
-    }
-
-    /// The same rule `History` applies, in the type that ages a readout. A
-    /// sample stamped in the past must not replace a newer one, because the
+    /// A sample stamped in the past must not replace a newer one, because the
     /// stamp is what the staleness thresholds are measured from.
     #[test]
     fn a_retained_metric_ignores_a_sample_that_travels_backwards_in_time() {
@@ -382,19 +283,6 @@ mod tests {
         // the metric still goes stale on the schedule the newer one set.
         assert!(tracked.view(10_000 + STALE_AFTER_MS).is_stale());
         assert!(!tracked.view(9_000 + STALE_AFTER_MS).is_stale());
-    }
-
-    #[test]
-    fn history_ignores_a_point_that_travels_backwards_in_time() {
-        let mut history = History::new(10_000);
-        history.push(5_000, Some(1.0));
-        history.push(4_000, Some(2.0));
-        assert_eq!(history.len(), 1);
-    }
-
-    #[test]
-    fn the_default_history_window_is_fifteen_minutes() {
-        assert_eq!(History::default().window_ms(), 15 * 60 * 1_000);
     }
 
     #[test]

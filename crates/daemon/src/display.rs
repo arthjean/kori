@@ -122,6 +122,9 @@ struct Animation {
     cursor: usize,
     /// When the frame after the current one is due.
     due: Instant,
+    /// The wall clock at the instant `due` counts from, reported in `status`
+    /// so a client can tell which frame is on the glass.
+    started_at_unix_ms: u64,
 }
 
 struct AnimationFrame {
@@ -234,6 +237,10 @@ impl DisplayExecutor {
             frames_sent: self.frames_sent,
             failed_transfers: self.failed_transfers,
             last_frame_at_unix_ms: self.last_frame_at_unix_ms,
+            animation_started_at_unix_ms: self
+                .animation
+                .as_ref()
+                .map(|animation| animation.started_at_unix_ms),
         }
     }
 
@@ -315,6 +322,7 @@ impl DisplayExecutor {
                 frames,
                 cursor: 0,
                 due: Instant::now() + delay,
+                started_at_unix_ms: crate::now_unix_ms(),
             });
         }
         Ok(outcome)
@@ -927,9 +935,18 @@ mod tests {
     fn applying_an_animation_puts_its_first_frame_on_the_glass_and_starts_a_clock() {
         let (mut executor, bulk) = executor();
         let preset = animated("apply", 3, 10);
+        let before = crate::now_unix_ms();
         let outcome = executor.apply(&preset, &samples(None, None)).unwrap();
+        let after = crate::now_unix_ms();
 
         assert_eq!(outcome.frames, 1, "the first picture goes out at once");
+        // The instant the clock counts from is what a client resumes its
+        // preview against, so it is reported while the animation plays.
+        let started = executor
+            .state(Revision::initial())
+            .animation_started_at_unix_ms
+            .expect("a playing animation reports its clock");
+        assert!((before..=after).contains(&started));
         assert_eq!(pictures(&bulk), 1);
         assert!(
             executor.state(Revision::initial()).streaming,
@@ -954,6 +971,13 @@ mod tests {
             executor.advance_animation(Instant::now() + Duration::from_secs(10)),
             None,
             "a still picture has no next frame to be due"
+        );
+        assert_eq!(
+            executor
+                .state(Revision::initial())
+                .animation_started_at_unix_ms,
+            None,
+            "a still picture has no clock to report"
         );
         assert_eq!(pictures(&bulk), 1);
     }

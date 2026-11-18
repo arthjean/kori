@@ -19,8 +19,9 @@ use kori_core::display::{DisplayMode, LcdMetric};
 use crate::assets::Icon;
 use crate::components::{Button, ButtonVariant, ControlState, Note, NoteLevel, SelectOption};
 use crate::display::{DisplayColorField, DisplayEditor};
-use crate::feed::Command;
+use crate::feed::{Command, now_unix_ms};
 use crate::shell::Shell;
+use crate::shell::sync::Domain;
 use crate::theme::{color, space, text};
 
 use super::row::ROW_DETAIL_INDENT;
@@ -382,18 +383,22 @@ impl Shell {
     /// Deduplicating here matters more than it does for a channel: an unchanged
     /// preset still costs the daemon a full render before it can compare the
     /// picture it produced.
-    pub(crate) fn send_display(&mut self) {
+    pub(crate) fn send_display(&mut self) -> bool {
         let Ok(preset) = self.lcd.preset() else {
-            return;
+            return false;
         };
         let committed = self
             .link
             .status()
             .and_then(|status| status.display.committed.as_ref());
         if committed == Some(&preset) {
-            return;
+            return false;
         }
-        self.feed.send(Command::ApplyDisplay(preset));
+        self.feed.send(Command::ApplyDisplay {
+            preset,
+            expect_revision: self.expected_revision(Domain::Panel),
+        });
+        true
     }
 
     /// Ask the platform for a file, and put what comes back on the panel.
@@ -434,8 +439,12 @@ impl Shell {
     /// Cheap when nothing it is made of changed: the picture carries its own
     /// key, so this is one comparison per call and a render or a decode only
     /// when something the frame depends on actually moved. Called after every
-    /// edit and on every sample, which is exactly when that can happen.
-    pub(crate) fn refresh_picture(&mut self, cx: &mut Context<Self>) {
+    /// edit, on every sample while the preview is on screen, and once when it
+    /// comes on screen; never for a preview nobody can see.
+    ///
+    /// Returns whether the picture was replaced, which is a change the screen
+    /// has to repaint for.
+    pub(crate) fn refresh_picture(&mut self, cx: &mut Context<Self>) -> bool {
         let panel = self
             .link
             .status()
@@ -444,8 +453,36 @@ impl Shell {
         // Only a picture that was actually replaced needs a timer. Arming one
         // on every sample would take a fresh generation each second, stopping
         // the chain already running and costing the animation a frame.
-        if self.lcd.sync_picture(panel, telemetry) {
+        let replaced = self.lcd.sync_picture(panel, telemetry);
+        if replaced {
+            self.picture_version = self.picture_version.wrapping_add(1);
             self.play_film(cx);
+        }
+        replaced
+    }
+
+    /// Start the preview's animation again, on the frame the glass shows.
+    ///
+    /// While the preview was off screen its timer stopped, and the daemon kept
+    /// walking its own copy on the wall clock. When the preview shows what the
+    /// daemon committed, `status.display` says when that clock started, and
+    /// the same delays walked from the same instant land on the same frame.
+    /// A preview of an edit the daemon has not taken starts at its first frame,
+    /// since no glass is playing it.
+    pub(crate) fn resume_film(&mut self, cx: &mut Context<Self>) {
+        let started = self
+            .link
+            .status()
+            .filter(|status| status.display.committed.as_ref() == Some(self.lcd.preview()))
+            .and_then(|status| status.display.animation_started_at_unix_ms);
+        let first = match started {
+            Some(started) => self.lcd.seek_film(std::time::Duration::from_millis(
+                now_unix_ms().saturating_sub(started),
+            )),
+            None => self.lcd.seek_film(std::time::Duration::ZERO),
+        };
+        if let Some(first) = first {
+            self.arm_film(first, cx);
         }
     }
 
@@ -458,9 +495,6 @@ impl Shell {
     /// task is cancelled, because cancelling the wrong one is the failure this
     /// avoids.
     pub(crate) fn play_film(&mut self, cx: &mut Context<Self>) {
-        if !self.is_open(LightingRow::Lcd) {
-            return;
-        }
         let Some(delay) = self
             .lcd
             .film()
@@ -469,7 +503,16 @@ impl Shell {
         else {
             return;
         };
+        self.arm_film(delay, cx);
+    }
 
+    /// Show the next frame after `delay`, and keep going while the preview is
+    /// on screen.
+    fn arm_film(&mut self, delay: std::time::Duration, cx: &mut Context<Self>) {
+        // Only an animation on screen runs: Lighting, with the panel row open.
+        if !self.preview_visible() {
+            return;
+        }
         let generation = self.lcd.next_film_generation();
         cx.spawn(async move |shell, cx| {
             cx.background_executor().timer(delay).await;
@@ -495,7 +538,10 @@ impl Shell {
     /// automatic write to notice.
     fn resume_display(&mut self, cx: &mut Context<Self>) {
         if let Ok(preset) = self.lcd.preset() {
-            self.feed.send(Command::ApplyDisplay(preset));
+            self.feed.send(Command::ApplyDisplay {
+                preset,
+                expect_revision: self.expected_revision(Domain::Panel),
+            });
         }
         cx.notify();
     }

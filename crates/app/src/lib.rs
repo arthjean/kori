@@ -23,3 +23,6 @@ pub mod shell;
 pub mod startup;
 pub mod theme;
 pub mod window_chrome;
+
+#[cfg(test)]
+pub(crate) mod testing;

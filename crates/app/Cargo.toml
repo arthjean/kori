@@ -27,6 +27,12 @@ kori-lcd-renderer = { workspace = true, features = ["testing"] }
 # element tree: the rules a screen applies are unit-tested, but GPUI only
 # asserts on a doubled hover style when the screen holding it is drawn.
 gpui = { version = "0.2.2", features = ["test-support"] }
+# A real daemon on a fake machine, so the window's two connections, the stream
+# it reads and the writes it sends are proven against the server they talk to.
+# The harness is the daemon's own, included by path as the command line's tests
+# include it. Both are workspace crates under the same licence.
+kori-daemon = { path = "../daemon" }
+kori-hardware-linux = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

@@ -68,6 +68,13 @@ on the socket), and the user is checked on every connection; that check and the
 safety floors the daemon applies to every value are what protect the hardware,
 not the name.
 
+The window follows what other clients write. Every write it sends expects the
+revision its editor was built from, so a change an agent made in between is
+refused with `conflict` instead of being written over; the window then shows
+the committed state and names who changed it under the control, "Changed by
+korictl", or "Changed by another client" for a connection that gave no name,
+until the operator edits that control again.
+
 ### What the daemon remembers, and how to follow it
 
 `korictl events [--after SEQ] [--limit N]` reads the event log. Every event
@@ -90,7 +97,9 @@ slots and 1,440 one-minute slots, for ten metrics (`cpu_load`,
 step under a minute reads the first and covers at most 15 minutes; a step in
 whole minutes reads the second and covers at most 24 hours. **The history never
 reaches the disk and restarts empty with the daemon.** A longer record is the
-client's to keep: `korictl watch --topic telemetry >> telemetry.ndjson`.
+client's to keep: `korictl watch --topic telemetry >> telemetry.ndjson`. The
+window keeps none either: its temperature chart asks this history for fifteen
+minutes in five-second points, so it is full the moment the window opens.
 
 `korictl watch [--topic T]... [--interval DURATION] [--count N] [--for
 DURATION]` subscribes and prints one push per line, flushed as it arrives:

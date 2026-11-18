@@ -156,6 +156,13 @@ fn sink<K: Copy + PartialEq + 'static>(
 }
 
 impl Interaction {
+    /// Hold a gesture as a press would, for a test that needs one in progress
+    /// without painting a control to press.
+    #[cfg(test)]
+    pub fn hold(&mut self, drag: Drag) {
+        self.drag = Some(drag);
+    }
+
     /// Close whatever list is open, and say whether one was.
     pub fn dismiss(&mut self) -> bool {
         self.popover.take().is_some()

@@ -401,6 +401,15 @@ pub struct DisplayState {
     pub failed_transfers: u64,
     /// When the panel last took a frame, if it ever did.
     pub last_frame_at_unix_ms: Option<u64>,
+    /// When the animation the panel is playing started, while one plays.
+    ///
+    /// The daemon walks an animation on the wall clock from this instant, a
+    /// late tick skipping the frames it slept through, so the frame on the
+    /// glass at any moment is this time's distance into the picture's own
+    /// delays. A window that stopped its preview while hidden resumes it there
+    /// instead of at the first frame. `None` for a still picture and for every
+    /// other mode.
+    pub animation_started_at_unix_ms: Option<u64>,
 }
 
 /// What one lighting channel is currently showing, as far as the daemon knows.
@@ -796,6 +805,7 @@ mod tests {
                 frames_sent: 0,
                 failed_transfers: 0,
                 last_frame_at_unix_ms: None,
+                animation_started_at_unix_ms: None,
             },
             socket_path: "/run/user/1000/kori/kori.sock".into(),
         };

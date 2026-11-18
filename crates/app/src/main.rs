@@ -49,8 +49,10 @@ fn main() -> ExitCode {
         default_hook(info);
     }));
 
-    // The worker polls at the daemon's own cadence and wakes the window when a
-    // new sample lands, so the interface never repaints on a timer of its own.
+    // The worker subscribes to the daemon's stream at its own cadence and
+    // wakes the window when a push lands, so the interface never repaints on a
+    // timer of its own, and the interval is also how long it waits between two
+    // attempts to reach a daemon that is not answering.
     let socket = socket_path_from_env();
     let (feed, notifications) = Feed::spawn(
         socket,

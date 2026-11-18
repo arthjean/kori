@@ -33,6 +33,11 @@ pub enum LinkState {
         capabilities: Arc<CapabilityRecord>,
         profiles: Arc<[Profile]>,
         telemetry: Option<Arc<TelemetrySnapshot>>,
+        /// The number the daemon gave the connection this window writes on.
+        ///
+        /// A revision whose `changed_by` names it is this window's own write;
+        /// any other is a change made by someone else.
+        connection: u64,
     },
     /// Not connected. `message` is shown verbatim to the operator.
     Unavailable { message: String },
@@ -49,6 +54,14 @@ impl LinkState {
     pub fn status(&self) -> Option<&DaemonStatus> {
         match self {
             Self::Connected { status, .. } => Some(status),
+            Self::Unavailable { .. } => None,
+        }
+    }
+
+    /// The connection this window writes on, while one is open.
+    pub fn connection(&self) -> Option<u64> {
+        match self {
+            Self::Connected { connection, .. } => Some(*connection),
             Self::Unavailable { .. } => None,
         }
     }
@@ -349,6 +362,7 @@ pub(crate) mod fixture {
                     frames_sent: 0,
                     failed_transfers: 0,
                     last_frame_at_unix_ms: None,
+                    animation_started_at_unix_ms: None,
                 },
                 socket_path: "/run/user/1000/kori/kori.sock".into(),
             }),
@@ -363,6 +377,7 @@ pub(crate) mod fixture {
             }),
             profiles: vec![Profile::safe()].into(),
             telemetry: snapshot.map(Arc::new),
+            connection: 1,
         }
     }
 

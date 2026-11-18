@@ -167,6 +167,37 @@ impl ChannelEditor {
         }
     }
 
+    /// Load this row from a program the daemon reported committed.
+    ///
+    /// Off keeps the color and the brightness the row was showing, because Off
+    /// is a mode the operator comes back from and the color is what they come
+    /// back to. Every other program carries its own and replaces them.
+    pub fn adopt(&mut self, program: &LightingProgram) {
+        match program {
+            LightingProgram::Off => self.mode = LightingMode::Off,
+            LightingProgram::Fixed { color, brightness } => {
+                self.mode = LightingMode::Fixed;
+                self.color = color.to_hex();
+                self.brightness = brightness.percent();
+            }
+            LightingProgram::Effect {
+                effect,
+                colors,
+                brightness,
+                speed,
+                direction,
+            } => {
+                self.mode = LightingMode::Effect(*effect);
+                if let Some(color) = colors.first() {
+                    self.color = color.to_hex();
+                }
+                self.brightness = brightness.percent();
+                self.speed = *speed;
+                self.direction = *direction;
+            }
+        }
+    }
+
     /// Set the brightness, staying inside the range the daemon accepts.
     ///
     /// The one setter. A drag names a value rather than a number of steps, and
@@ -222,6 +253,13 @@ impl LightingEditor {
         self.channels
             .iter_mut()
             .find(|editor| editor.channel == channel)
+    }
+
+    /// Put a committed program in one channel's row, when that row exists.
+    pub fn adopt(&mut self, channel: u8, program: &LightingProgram) {
+        if let Some(editor) = self.channel_mut(channel) {
+            editor.adopt(program);
+        }
     }
 }
 
@@ -371,6 +409,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// What another client committed comes back out of the row as the same
+    /// program, so adopting it leaves nothing pending and writes nothing.
+    #[test]
+    fn an_adopted_program_is_the_program_the_row_then_builds() {
+        let programs = [
+            LightingProgram::Fixed {
+                color: Rgb::new(0xff, 0x88, 0x00),
+                brightness: Brightness::new(40).unwrap(),
+            },
+            LightingProgram::Effect {
+                effect: LightingEffect::Breathing,
+                colors: vec![Rgb::new(0x10, 0x20, 0x30)],
+                brightness: Brightness::new(80).unwrap(),
+                speed: EffectSpeed::Faster,
+                direction: EffectDirection::Forward,
+            },
+            LightingProgram::Off,
+        ];
+        let mut editor = ChannelEditor::new(1);
+        for program in programs {
+            editor.adopt(&program);
+            assert_eq!(editor.program().unwrap(), program);
+        }
+        // Off kept the color it was showing, so coming back restores it.
+        assert_eq!(editor.color, "102030");
+
+        let mut screen = LightingEditor::default();
+        screen.sync(&[1, 2]);
+        screen.adopt(2, &LightingProgram::Off);
+        assert_eq!(screen.channel(2).unwrap().mode, LightingMode::Off);
+        assert_eq!(screen.channel(1).unwrap().mode, LightingMode::Fixed);
+        screen.adopt(7, &LightingProgram::Off);
     }
 
     #[test]

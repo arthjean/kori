@@ -77,8 +77,11 @@ event and the `events` request; the telemetry `history` request; the
 `subscribe` request and the `push` frames it turns a connection into; a
 `revision` and a `changed_by` on `status.cooling`, each `status.lighting`
 entry and `status.display`, with `expect_revision` on the three write requests
-and the typed `conflict` refusal; and the `frames_sent`, `failed_transfers` and
-`last_frame_at_unix_ms` counters on `status.display`. `status.cooling` changed
+and the typed `conflict` refusal; the `frames_sent`, `failed_transfers` and
+`last_frame_at_unix_ms` counters on `status.display`; and
+`status.display.animation_started_at_unix_ms`, the instant the daemon's
+animation clock counts from, so a window that paused its preview while hidden
+resumes it on the frame the glass is showing. `status.cooling` changed
 shape: it was the committed program itself and is now an object holding it as
 `committed` beside its revision. The diagnostics export carries the same events,
 so `DIAGNOSTICS_SCHEMA_VERSION` moved from 1 to 2 with this bump for their `seq`

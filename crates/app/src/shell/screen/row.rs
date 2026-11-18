@@ -20,6 +20,7 @@ use gpui::{Div, Pixels, SharedString, Stateful, div, prelude::*, px};
 use crate::assets::Icon;
 use crate::components::{ControlState, Slider, chevron, focus_ring, icon};
 use crate::shell::Shell;
+use crate::shell::sync::Domain;
 use crate::theme::{Color, META_SEPARATOR, RADIUS, ROW_RADIUS, TARGET_MIN, color, space, text};
 use gpui::{Context, Hsla};
 
@@ -254,6 +255,12 @@ impl Shell {
                     ))
                     .child(div().flex_none().w(ROW_MODE_WIDTH).child(line.mode)),
             )
+            // Who changed this device, when it was not this window, on the
+            // line of the device it changed.
+            .children(self.change_notice(match row {
+                LightingRow::Channel(channel) => Domain::Lighting(channel),
+                LightingRow::Lcd => Domain::Panel,
+            }))
             .children(detail)
     }
 

@@ -145,6 +145,34 @@ impl ImageFilm {
         self.frames.iter().map(|frame| frame.delay).sum()
     }
 
+    /// Put the cursor on the frame showing `elapsed` into the animation, and
+    /// return how long that frame still has to stay up.
+    ///
+    /// The daemon walks its copy on the wall clock from the instant it started
+    /// and skips what a late tick slept through, so the frame on the glass is a
+    /// function of elapsed time alone. Walking the same delays from the same
+    /// instant lands the preview on that frame.
+    pub fn seek(&mut self, elapsed: Duration) -> Option<Duration> {
+        let total = self.duration();
+        if self.frames.len() < 2 || total.is_zero() {
+            return None;
+        }
+        let mut into = Duration::from_nanos(
+            (elapsed.as_nanos() % total.as_nanos())
+                .try_into()
+                .unwrap_or(0),
+        );
+        for (index, frame) in self.frames.iter().enumerate() {
+            if into < frame.delay {
+                self.cursor = index;
+                return Some(frame.delay - into);
+            }
+            into -= frame.delay;
+        }
+        self.cursor = 0;
+        self.frames.first().map(|frame| frame.delay)
+    }
+
     /// Move to the next frame, wrapping at the end.
     fn advance(&mut self) {
         if !self.frames.is_empty() {
@@ -199,6 +227,14 @@ impl Picture {
     }
 
     pub(super) fn film(&self) -> Option<&ImageFilm> {
+        match self {
+            Self::Film(film) => Some(film),
+            Self::None | Self::Still { .. } => None,
+        }
+    }
+
+    /// The animation, for moving its cursor.
+    pub(super) fn film_mut(&mut self) -> Option<&mut ImageFilm> {
         match self {
             Self::Film(film) => Some(film),
             Self::None | Self::Still { .. } => None,
