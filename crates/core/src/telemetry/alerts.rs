@@ -32,18 +32,24 @@ pub const STALL_SAMPLE_COUNT: u8 = 3;
 
 /// A condition the Cooling screen must surface immediately.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "alert", rename_all = "snake_case")]
 pub enum SafetyAlert {
     /// The coolant is at or above the failsafe threshold.
     LiquidCritical {
+        /// Coolant temperature, in degrees Celsius.
         temperature_c: f32,
+        /// The failsafe threshold, in degrees Celsius.
         threshold_c: f32,
     },
     /// A commanded channel has reported zero RPM for several samples.
     ChannelStalled {
         channel: Channel,
+        /// Duty the daemon commanded, 0 to 255.
         commanded_duty: u8,
+        /// Consecutive samples read at zero RPM.
         samples: u8,
+        /// Speed the tachometer reports, in RPM.
         rpm: u32,
     },
 }

@@ -11,6 +11,26 @@ description = "Capability, telemetry, profile and IPC types shared by the Kori d
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Generates the protocol's JSON Schema from these types, behind `schema`.
+# Draft 2020-12, doc comments become descriptions, and `deny_unknown_fields`
+# becomes `additionalProperties: false`. MIT (schemars and schemars_derive, its
+# only new crate), compatible with the project's GPL-3.0-or-later; already in
+# the graph through gpui at this exact version.
+schemars = { version = "1.2.2", optional = true }
+
+[features]
+# Derives a JSON Schema for every type that crosses the socket, so
+# `docs/protocol.schema.json` is generated from the wire types rather than
+# written beside them. Only dev-dependencies enable it: with resolver 2, a
+# release build of `korid`, `kori` or `korictl` never compiles the derives, and
+# `korictl schema` prints the committed file instead of generating one.
+schema = ["dep:schemars"]
+
+# Prints the protocol schema, which is how `docs/protocol.schema.json` is
+# regenerated. Needs the derives, so it builds only with them.
+[[example]]
+name = "protocol_schema"
+required-features = ["schema"]
 
 [lints]
 workspace = true

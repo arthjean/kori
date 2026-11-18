@@ -31,6 +31,10 @@ pub enum Access {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Version,
+    /// Print the committed protocol schema. Contacts nothing.
+    Schema,
+    /// Print what this tool accepts and answers. Contacts nothing.
+    Describe,
     Status,
     Telemetry,
     Capabilities,
@@ -58,6 +62,8 @@ impl Action {
     pub fn access(self) -> Access {
         match self {
             Self::Version
+            | Self::Schema
+            | Self::Describe
             | Self::Status
             | Self::Telemetry
             | Self::Capabilities
@@ -67,6 +73,29 @@ impl Action {
             | Self::History
             | Self::Watch => Access::Read,
             Self::Forward { .. } | Self::ProfileActivate | Self::ProfileDelete => Access::Write,
+        }
+    }
+
+    /// The protocol request this action sends after the handshake, by its wire
+    /// tag. `None` for an action that answers without a request.
+    ///
+    /// `version` sends only the handshake, which every other connecting action
+    /// sends too, so it is listed as `hello`.
+    pub fn request(self) -> Option<&'static str> {
+        match self {
+            Self::Schema | Self::Describe => None,
+            Self::Version => Some("hello"),
+            Self::Status => Some("status"),
+            Self::Telemetry => Some("telemetry"),
+            Self::Capabilities => Some("capabilities"),
+            Self::Profiles => Some("profiles"),
+            Self::Diagnostics => Some("diagnostics"),
+            Self::Events => Some("events"),
+            Self::History => Some("history"),
+            Self::Watch => Some("subscribe"),
+            Self::Forward { tag, .. } => Some(tag),
+            Self::ProfileActivate => Some("activate_profile"),
+            Self::ProfileDelete => Some("delete_profile"),
         }
     }
 }
@@ -159,6 +188,21 @@ pub const COMMANDS: &[Spec] = &[
         options: &[],
         summary: "This client's version and protocol, and the daemon's version when it answers.",
         action: Action::Version,
+    },
+    Spec {
+        words: &["schema"],
+        operand: None,
+        options: &[],
+        summary: "The JSON Schema of every request, reply, push and error. Needs no daemon.",
+        action: Action::Schema,
+    },
+    Spec {
+        words: &["describe"],
+        operand: None,
+        options: &[],
+        summary: "Every command, exit code, error code and environment variable, as JSON. \
+                  Needs no daemon.",
+        action: Action::Describe,
     },
     Spec {
         words: &["status"],

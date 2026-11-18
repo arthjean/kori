@@ -1,0 +1,5383 @@
+{
+  "$defs": {
+    "AccessMode": {
+      "description": "Whether the daemon may write at all.",
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {
+              "const": "read_write",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Writes are refused. `conflicts` lists the evidence.",
+          "properties": {
+            "conflicts": {
+              "items": {
+                "$ref": "#/$defs/OwnershipConflict"
+              },
+              "type": "array"
+            },
+            "mode": {
+              "const": "read_only",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "conflicts"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ActivationOutcome": {
+      "description": "What actually happened to the hardware when a profile was activated.",
+      "properties": {
+        "applied": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApplyOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The write the activation performed, when it performed one."
+        },
+        "hardware": {
+          "$ref": "#/$defs/HardwareState"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "hardware"
+      ],
+      "type": "object"
+    },
+    "ApplyOutcome": {
+      "description": "The result of one cooling write, with the evidence behind it.",
+      "properties": {
+        "deduplicated": {
+          "description": "True when nothing was written because the state already matched.",
+          "type": "boolean"
+        },
+        "hardware": {
+          "$ref": "#/$defs/HardwareState"
+        },
+        "readback": {
+          "description": "What the kernel reported after the write, per channel.",
+          "items": {
+            "$ref": "#/$defs/ChannelReadback"
+          },
+          "type": "array"
+        },
+        "writes": {
+          "description": "Number of kernel attributes actually written.\n\nZero means the request matched the confirmed state and was\ndeduplicated, which is what a repeated Apply must do.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hardware",
+        "writes",
+        "deduplicated",
+        "readback"
+      ],
+      "type": "object"
+    },
+    "Attribution": {
+      "description": "Who caused a change: a connection, or the daemon itself.\n\nThe process ID is the kernel's answer (`SO_PEERCRED`), taken when the\nconnection was accepted. The client name is whatever that connection said\nin its handshake, so it labels the write rather than proving who made it.",
+      "oneOf": [
+        {
+          "properties": {
+            "client": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "connection": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "origin": {
+              "const": "client",
+              "type": "string"
+            },
+            "pid": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "origin",
+            "connection",
+            "pid"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The daemon acting on its own, such as restoring the operator's last\nstate at startup.",
+          "properties": {
+            "origin": {
+              "const": "daemon",
+              "type": "string"
+            }
+          },
+          "required": [
+            "origin"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "BlockedCapability": {
+      "properties": {
+        "capability": {
+          "$ref": "#/$defs/CapabilityId"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Brightness": {
+      "description": "A brightness, in percent: 0 (off) to 100.",
+      "maximum": 100,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Capability": {
+      "description": "One capability with its resolved state.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/CapabilityId"
+        },
+        "state": {
+          "$ref": "#/$defs/CapabilityState"
+        }
+      },
+      "required": [
+        "id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "CapabilityId": {
+      "description": "A capability a later story depends on.\n\nThe identifiers are stable: a cooling, RGB or LCD story names the exact\nvariant it requires and reads its [`CapabilityState`] before enabling a\ncontrol.",
+      "oneOf": [
+        {
+          "const": "liquid_temperature",
+          "description": "Coolant temperature in millidegrees Celsius.",
+          "type": "string"
+        },
+        {
+          "const": "pump_speed",
+          "description": "Pump tachometer in RPM.",
+          "type": "string"
+        },
+        {
+          "const": "fan_speed",
+          "description": "Fan tachometer in RPM.",
+          "type": "string"
+        },
+        {
+          "const": "pump_duty",
+          "description": "Fixed pump duty, 0-255 PWM.",
+          "type": "string"
+        },
+        {
+          "const": "fan_duty",
+          "description": "Fixed fan duty, 0-255 PWM.",
+          "type": "string"
+        },
+        {
+          "const": "pump_curve",
+          "description": "Onboard pump curve over the driver's temperature points.",
+          "type": "string"
+        },
+        {
+          "const": "fan_curve",
+          "description": "Onboard fan curve over the driver's temperature points.",
+          "type": "string"
+        },
+        {
+          "const": "rgb_fixed_color",
+          "description": "Per-channel fixed RGB color.",
+          "type": "string"
+        },
+        {
+          "const": "rgb_effects",
+          "description": "Animated RGB effects.",
+          "type": "string"
+        },
+        {
+          "const": "lcd_frame",
+          "description": "LCD framebuffer transfer.",
+          "type": "string"
+        },
+        {
+          "const": "lcd_display_control",
+          "description": "LCD orientation and brightness commands.",
+          "type": "string"
+        }
+      ]
+    },
+    "CapabilityRecord": {
+      "description": "A versioned, evidence-backed capability record for the whole machine.",
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/ProbeContext"
+        },
+        "devices": {
+          "description": "Allowlisted devices found on the machine.",
+          "items": {
+            "$ref": "#/$defs/DeviceRecord"
+          },
+          "type": "array"
+        },
+        "rejected": {
+          "description": "Devices discovered on the bus that the allowlist rejects.",
+          "items": {
+            "$ref": "#/$defs/RejectedDevice"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "context",
+        "devices",
+        "rejected"
+      ],
+      "type": "object"
+    },
+    "CapabilityState": {
+      "description": "How far a capability may be exercised right now.",
+      "oneOf": [
+        {
+          "description": "Readable, and writable only when `writable` is true.",
+          "properties": {
+            "source": {
+              "description": "Filesystem path or interface the capability resolves to.",
+              "type": "string"
+            },
+            "state": {
+              "const": "available",
+              "type": "string"
+            },
+            "writable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "state",
+            "writable",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The device exposes it, but the protocol is not validated yet.\n\nNo write is permitted while a capability is in this state. `reason` is\nshown verbatim on the control, so it carries its own punctuation.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unvalidated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The device does not expose it on this firmware or kernel binding.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Channel": {
+      "description": "A controllable cooling channel.",
+      "enum": [
+        "pump",
+        "fan"
+      ],
+      "type": "string"
+    },
+    "ChannelReadback": {
+      "description": "What one channel reported after a write.\n\nEvery field is optional because a readback the kernel does not provide is\nrecorded as missing rather than assumed to match what was written.",
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/Channel"
+        },
+        "curve_points_confirmed": {
+          "description": "Curve points that read back identical to what was written.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "duty": {
+          "description": "Duty the kernel reports after the write, 0 to 255.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mismatch": {
+          "description": "Set when the readback contradicts the value that was written.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PwmMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "channel"
+      ],
+      "type": "object"
+    },
+    "ChannelState": {
+      "description": "What one lighting channel is currently showing, as far as the daemon knows.",
+      "properties": {
+        "accessories": {
+          "description": "Accessory names the controller reported, in slot order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "changed_by": {
+          "$ref": "#/$defs/Attribution"
+        },
+        "channel": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "committed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LightingProgram"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last program the daemon committed, when it has committed one."
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "channel",
+        "accessories",
+        "revision",
+        "changed_by"
+      ],
+      "type": "object"
+    },
+    "ChannelTelemetry": {
+      "description": "Everything one cooling channel reports.",
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/Channel"
+        },
+        "duty": {
+          "$ref": "#/$defs/Reading_uint8",
+          "description": "Current duty, 0 to 255 as the kernel reports it (255 is 100%)."
+        },
+        "mode": {
+          "$ref": "#/$defs/Reading_PwmMode"
+        },
+        "rpm": {
+          "$ref": "#/$defs/Reading_uint32",
+          "description": "Tachometer reading, in RPM."
+        }
+      },
+      "required": [
+        "channel",
+        "rpm",
+        "duty",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "Collector": {
+      "description": "Ordered so a collector can key a map: the daemon tracks one health state per\ncollector, and the order the variants are declared in is the order those\nstates are reported in.",
+      "enum": [
+        "kraken",
+        "cpu",
+        "gpu",
+        "memory"
+      ],
+      "type": "string"
+    },
+    "CollectorFailure": {
+      "description": "A collector that failed or timed out during one pass.\n\nThe daemon keeps running and reports the failure instead of losing the\nwhole snapshot to one bad sensor.",
+      "properties": {
+        "collector": {
+          "$ref": "#/$defs/Collector"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "collector",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "ConfigState": {
+      "description": "How the on-disk configuration was resolved at startup.",
+      "oneOf": [
+        {
+          "description": "No configuration existed; built-in defaults are active.",
+          "properties": {
+            "state": {
+              "const": "defaults",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A valid configuration was loaded.",
+          "properties": {
+            "state": {
+              "const": "loaded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The configuration could not be loaded. The unreadable file was kept at\n`preserved_path` and `recovery_action` names what the operator can do.",
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "preserved_path": {
+              "type": "string"
+            },
+            "recovery_action": {
+              "type": "string"
+            },
+            "state": {
+              "const": "recovered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "detail",
+            "preserved_path",
+            "recovery_action"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ConnectedClient": {
+      "description": "One open connection, as `status` lists it.",
+      "properties": {
+        "client": {
+          "description": "The name the connection gave itself, when it gave one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "connected_at_unix_ms": {
+          "description": "When the connection was accepted, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connection": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pid": {
+          "description": "From the kernel, not from the client.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "connection",
+        "pid",
+        "connected_at_unix_ms"
+      ],
+      "type": "object"
+    },
+    "CoolingProgram": {
+      "description": "What a profile asks the hardware to do.",
+      "oneOf": [
+        {
+          "description": "Leave the device on its own firmware program.\n\nThis is the safe default: it writes nothing and preserves the firmware\nfailsafe unconditionally.",
+          "properties": {
+            "mode": {
+              "const": "onboard",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A constant duty per channel.",
+          "properties": {
+            "fan": {
+              "description": "Fan duty, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "const": "fixed",
+              "type": "string"
+            },
+            "pump": {
+              "description": "Pump duty, 0 to 255. The daemon refuses anything under 51\n(`MIN_PUMP_DUTY`, 20%), because 0 stops the pump.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 51,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "mode",
+            "pump",
+            "fan"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A liquid-temperature curve per channel.",
+          "properties": {
+            "fan": {
+              "$ref": "#/$defs/TemperatureCurve",
+              "description": "Fan curve: every point a duty from 0 to 255."
+            },
+            "mode": {
+              "const": "curve",
+              "type": "string"
+            },
+            "pump": {
+              "$ref": "#/$defs/TemperatureCurve",
+              "description": "Pump curve: every point a duty from 51 (`MIN_PUMP_DUTY`) to 255."
+            }
+          },
+          "required": [
+            "mode",
+            "pump",
+            "fan"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CoolingState": {
+      "description": "The thermal program, as `status` reports it.",
+      "properties": {
+        "changed_by": {
+          "$ref": "#/$defs/Attribution"
+        },
+        "committed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoolingProgram"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The program the daemon last committed, when it committed one.\n\nA duty can be read back from the driver, but a curve cannot: the device\npublishes no attribute that returns the shape it was given. The\ndaemon's own record is therefore the only place a curve exists, and a\nclient that could not see it would open on a plot the machine is not\nrunning and make the operator draw theirs again."
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "revision",
+        "changed_by"
+      ],
+      "type": "object"
+    },
+    "CurveChannel": {
+      "description": "The onboard curve surface of one PWM channel.",
+      "properties": {
+        "point_count": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "temp_index": {
+          "description": "`1` for `temp1_auto_point*`.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "temp_index",
+        "point_count",
+        "writable"
+      ],
+      "type": "object"
+    },
+    "DaemonStatus": {
+      "description": "Everything the client needs to decide what to enable.",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/AccessMode"
+        },
+        "active_profile": {
+          "type": "string"
+        },
+        "clients": {
+          "description": "Every open connection, the asking one included.",
+          "items": {
+            "$ref": "#/$defs/ConnectedClient"
+          },
+          "type": "array"
+        },
+        "config": {
+          "$ref": "#/$defs/ConfigState"
+        },
+        "cooling": {
+          "$ref": "#/$defs/CoolingState",
+          "description": "The thermal program the daemon last committed, and its revision."
+        },
+        "daemon_version": {
+          "type": "string"
+        },
+        "devices": {
+          "items": {
+            "$ref": "#/$defs/DeviceStatus"
+          },
+          "type": "array"
+        },
+        "display": {
+          "$ref": "#/$defs/DisplayState",
+          "description": "The panel's geometry and what it was last told to show."
+        },
+        "lighting": {
+          "description": "Lighting channels the controller reported, empty when it reported none.",
+          "items": {
+            "$ref": "#/$defs/ChannelState"
+          },
+          "type": "array"
+        },
+        "protocol_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "socket_path": {
+          "description": "Path of the Unix socket. The daemon opens no other listening endpoint.",
+          "type": "string"
+        },
+        "started_at_unix_ms": {
+          "description": "When this daemon started. Revisions, connection numbers, event\nsequence numbers and the telemetry history all restart with it, so a\nclient that sees this change knows every number it held is void.\nIn milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "daemon_version",
+        "protocol_version",
+        "started_at_unix_ms",
+        "clients",
+        "access",
+        "devices",
+        "active_profile",
+        "config",
+        "cooling",
+        "lighting",
+        "display",
+        "socket_path"
+      ],
+      "type": "object"
+    },
+    "DeviceId": {
+      "description": "Vendor and product identifiers of a USB device.\n\nFormatted as lowercase hexadecimal `vvvv:pppp` to match `lsusb` output.",
+      "properties": {
+        "product": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vendor": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "vendor",
+        "product"
+      ],
+      "type": "object"
+    },
+    "DeviceRecord": {
+      "description": "Everything the probe established about one device.",
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "type": "array"
+        },
+        "hwmon": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HwmonCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "interfaces": {
+          "items": {
+            "$ref": "#/$defs/UsbInterface"
+          },
+          "type": "array"
+        },
+        "lcd": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LcdTopology"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present only on the Kraken, and only once its LCD probe has run."
+        },
+        "rgb": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RgbTopology"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present only on the RGB controller, and only once its probe has run."
+        },
+        "support": {
+          "$ref": "#/$defs/SupportState"
+        },
+        "usb": {
+          "$ref": "#/$defs/UsbIdentity"
+        }
+      },
+      "required": [
+        "support",
+        "usb",
+        "interfaces",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "DeviceStatus": {
+      "description": "Per-device state the client renders.",
+      "properties": {
+        "blocked": {
+          "description": "Operator-facing reason each unavailable capability is blocked.",
+          "items": {
+            "$ref": "#/$defs/BlockedCapability"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/DeviceId"
+        },
+        "owned": {
+          "description": "The daemon holds the exclusive per-device lock.",
+          "type": "boolean"
+        },
+        "present": {
+          "type": "boolean"
+        },
+        "writable": {
+          "description": "Capabilities that may be written right now.",
+          "items": {
+            "$ref": "#/$defs/CapabilityId"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "present",
+        "owned",
+        "writable",
+        "blocked"
+      ],
+      "type": "object"
+    },
+    "DiagnosticEvent": {
+      "description": "One timestamped entry.",
+      "oneOf": [
+        {
+          "properties": {
+            "event": {
+              "const": "daemon_started",
+              "type": "string"
+            },
+            "socket_path": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "version",
+            "socket_path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "daemon_stopping",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "device": {
+              "$ref": "#/$defs/DeviceId"
+            },
+            "event": {
+              "const": "device_discovered",
+              "type": "string"
+            },
+            "sysfs_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "device",
+            "sysfs_path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "device": {
+              "$ref": "#/$defs/DeviceId"
+            },
+            "event": {
+              "const": "device_rejected",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "device",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "capability": {
+              "$ref": "#/$defs/CapabilityId"
+            },
+            "device": {
+              "$ref": "#/$defs/DeviceId"
+            },
+            "event": {
+              "const": "capability_resolved",
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "device",
+            "capability",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "device": {
+              "$ref": "#/$defs/DeviceId"
+            },
+            "event": {
+              "const": "ownership_acquired",
+              "type": "string"
+            },
+            "lock_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "device",
+            "lock_path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "device": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DeviceId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "event": {
+              "const": "ownership_conflict",
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "resource",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "access_mode_changed",
+              "type": "string"
+            },
+            "read_only": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "read_only",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A connection wrote or subscribed for the first time.\n\nNot recorded when a connection merely opens: a one-shot read would\notherwise cost two events, and a few hundred of them would flush the\nring of everything that says what the hardware did.",
+          "properties": {
+            "client": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "connection": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "event": {
+              "const": "client_accepted",
+              "type": "string"
+            },
+            "pid": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "uid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event",
+            "connection",
+            "uid",
+            "pid"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "client_rejected",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A connection that wrote or subscribed closed, or any connection was\nclosed on a framing error.",
+          "properties": {
+            "client": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "connection": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "event": {
+              "const": "client_disconnected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "connection",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/IpcError"
+            },
+            "event": {
+              "const": "request_rejected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/Attribution"
+            },
+            "event": {
+              "const": "profile_activated",
+              "type": "string"
+            },
+            "hardware": {
+              "$ref": "#/$defs/HardwareState"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "name",
+            "hardware",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/Attribution"
+            },
+            "event": {
+              "const": "profile_saved",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "name",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/Attribution"
+            },
+            "event": {
+              "const": "profile_deleted",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "name",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "config_loaded",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "event": {
+              "const": "config_recovered",
+              "type": "string"
+            },
+            "preserved_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "detail",
+            "preserved_path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A cooling program reached the hardware, or was refused before it did.",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/Attribution"
+            },
+            "event": {
+              "const": "program_applied",
+              "type": "string"
+            },
+            "hardware": {
+              "$ref": "#/$defs/HardwareState"
+            },
+            "writes": {
+              "description": "Kernel attributes actually written. Zero means deduplicated.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event",
+            "hardware",
+            "writes",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A lighting program reached the controller, or was refused before it did.\n\nThe program is recorded as its summary, never as packet bytes: a\ndiagnostics archive is something an operator attaches to an issue, and\na wire dump would put the reverse-engineered protocol in it.",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/Attribution"
+            },
+            "channel": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "event": {
+              "const": "lighting_applied",
+              "type": "string"
+            },
+            "hardware": {
+              "$ref": "#/$defs/HardwareState"
+            },
+            "program": {
+              "type": "string"
+            },
+            "writes": {
+              "description": "Reports actually sent. Zero means deduplicated or refused.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event",
+            "channel",
+            "program",
+            "hardware",
+            "writes",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A preset was applied to the panel or refused, or the stream that keeps\nit current stopped or resumed.\n\nNot recorded for a frame the stream sends while it is healthy: at one a\nsecond that event used to be nine in ten of the ring. The counters in\n`status.display` carry that steady state instead.",
+          "properties": {
+            "by": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Attribution"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who applied the preset. `None` for a change of the stream's own\nstate, which no command caused."
+            },
+            "event": {
+              "const": "display_applied",
+              "type": "string"
+            },
+            "frames": {
+              "description": "Frames actually sent. Zero means deduplicated or refused.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hardware": {
+              "$ref": "#/$defs/HardwareState"
+            },
+            "mode": {
+              "description": "Preset mode, as its stable key rather than its label.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "mode",
+            "hardware",
+            "frames"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A committed curve is not what the device turned out to be running.\n\nCurve points are write-only on this driver, so a curve write is accepted\nwith nothing to compare it against. The duty the device reports at the\nmeasured liquid temperature is the one thing that can contradict it\nafterwards, and this is that contradiction.",
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "event": {
+              "const": "curve_diverged",
+              "type": "string"
+            },
+            "expected": {
+              "description": "Duty the committed curve commands at that temperature, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "liquid_temperature_mc": {
+              "description": "Liquid temperature in millidegrees Celsius, as `temp1_input` reports\nit. An integer because this event is compared and hashed, and\nbecause it is the unit the attribute already carries.",
+              "format": "int32",
+              "type": "integer"
+            },
+            "reported": {
+              "description": "Duty the device reports it is running, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event",
+            "channel",
+            "liquid_temperature_mc",
+            "expected",
+            "reported"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A committed command reached the hardware but could not be written down.\n\nThe device took it, so nothing on screen is wrong. What is lost is the\nnext start: the daemon will replay the state it last managed to record\nrather than this one, and this line is the only place that says so.",
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "event": {
+              "const": "session_not_recorded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A telemetry collector panicked or stopped answering.",
+          "properties": {
+            "collector": {
+              "$ref": "#/$defs/Collector"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "event": {
+              "const": "collector_failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "collector",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "collector": {
+              "$ref": "#/$defs/Collector"
+            },
+            "event": {
+              "const": "collector_recovered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "collector"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "at_unix_ms": {
+          "description": "When the event was recorded, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seq": {
+          "description": "1 for the first event a daemon records, then one more per event.\n\nThe cursor a client reads from: the ring drops the oldest events, and a\ngap between the sequence number a client last saw and the oldest one\nstill held is exactly the number of events it missed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        }
+      },
+      "required": [
+        "seq",
+        "at_unix_ms",
+        "severity"
+      ],
+      "type": "object"
+    },
+    "DiagnosticsExport": {
+      "description": "The complete payload of an export action.\n\nEvery field is built from values this crate owns. Nothing walks the home\ndirectory, reads the environment or touches the network.",
+      "properties": {
+        "capabilities": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapabilityRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "daemon_version": {
+          "type": "string"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/DiagnosticEvent"
+          },
+          "type": "array"
+        },
+        "generated_at_unix_ms": {
+          "description": "When the export was produced, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "generated_at_unix_ms",
+        "daemon_version",
+        "events"
+      ],
+      "type": "object"
+    },
+    "DisplayError": {
+      "description": "Every way a preset or a frame can be refused, naming the field at fault.\n\nTagged `kind`, like the other validation errors, because [`crate::ipc::IpcError`]\nwraps this one and is itself tagged `error`: two `error` tags in one object\nis a frame neither side can decode.",
+      "oneOf": [
+        {
+          "properties": {
+            "field": {
+              "description": "The editor field the operator was typing in.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "color",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/LightingError"
+            }
+          },
+          "required": [
+            "kind",
+            "field",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "image_path_missing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "bytes": {
+              "description": "Length of the path given, in bytes.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "image_path_too_long",
+              "type": "string"
+            },
+            "max_bytes": {
+              "description": "Longest path accepted, in bytes.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "bytes",
+            "max_bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "image_undecodable",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "height": {
+              "description": "Height of the picture, in pixels.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "image_too_large",
+              "type": "string"
+            },
+            "max": {
+              "description": "Longest side accepted, in pixels.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width of the picture, in pixels.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "width",
+            "height",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "image_too_many_pixels",
+              "type": "string"
+            },
+            "max": {
+              "description": "Most pixels decoded.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pixels": {
+              "description": "Pixels the picture carries.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "pixels",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "animation_too_long",
+              "type": "string"
+            },
+            "max": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "panel_unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DisplayMode": {
+      "description": "What kind of picture the panel shows.\n\nFour entries, each of which something in this product actually produces:\nthe infographic the daemon streams, the single reading that gives one\nmetric the whole dial, the solid field the transport probe sends, and a\nstatic image the operator picks. Nothing is listed that the renderer\ncannot draw.",
+      "oneOf": [
+        {
+          "const": "dual_infographic",
+          "description": "Two metrics, each with an arc, a value and a label.",
+          "type": "string"
+        },
+        {
+          "const": "single_reading",
+          "description": "One metric, on one arc, at the largest size the panel can hold.",
+          "type": "string"
+        },
+        {
+          "const": "solid",
+          "description": "The background color across the whole panel, and nothing else.",
+          "type": "string"
+        },
+        {
+          "const": "image",
+          "description": "A picture the operator chose, scaled to the panel.\n\nOne mode rather than two. A GIF carrying more than one frame is\nplayed, a GIF carrying one and a PNG or JPEG are held still, and the\ndifference is a property of the file rather than a choice the\noperator has to restate in a select.",
+          "type": "string"
+        }
+      ]
+    },
+    "DisplayOutcome": {
+      "description": "The result of one panel command.\n\nThe panel acknowledges no picture: there is no report that reads back what\nit is showing. The daemon is the sole writer, so its record of the last\npreset it committed is the only evidence, exactly as for lighting.\n`Confirmed` means the transfer completed, and nothing stronger.",
+      "properties": {
+        "brightness_sent": {
+          "description": "True when the display-control report went out for this command.\n\nThe brightness is a panel setting rather than a pixel, so it survives\nthe frame comparison. Without this field a preset whose only edit was\nthe brightness would be reported as \"nothing was sent\" by a client that\nhad just changed what the operator is looking at.",
+          "type": "boolean"
+        },
+        "deduplicated": {
+          "description": "True when the picture was already on the glass and no frame went out.\n\nThis is about the picture alone. A command can be deduplicated here and\nstill have changed the panel, because the brightness is not a picture:\nsee `brightness_sent`.",
+          "type": "boolean"
+        },
+        "frames": {
+          "description": "Frames actually sent. Zero means the request matched what the panel is\nalready showing and was deduplicated.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hardware": {
+          "$ref": "#/$defs/HardwareState"
+        },
+        "preset": {
+          "$ref": "#/$defs/DisplayPreset"
+        }
+      },
+      "required": [
+        "preset",
+        "hardware",
+        "frames",
+        "deduplicated",
+        "brightness_sent"
+      ],
+      "type": "object"
+    },
+    "DisplayPreset": {
+      "additionalProperties": false,
+      "description": "Everything the panel needs, with no pixel and no protocol byte in it.",
+      "properties": {
+        "background": {
+          "$ref": "#/$defs/Rgb"
+        },
+        "brightness": {
+          "$ref": "#/$defs/Brightness"
+        },
+        "image": {
+          "description": "Set only when [`DisplayMode::Image`] is selected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rgb"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Accepted, never drawn, never written back.\n\nThe panel carried the product's name until it was taken off the glass.\nThe field stays so a profile written before that still loads, since a\npreset refuses unknown fields; `skip_serializing` keeps it out of every\nfile written from now on. The condition that retires it is recorded\nunder \"Deprecated fields awaiting removal\" in `docs/schema-history.md`,\nbecause a compatibility shim with no stated end is permanent.",
+          "writeOnly": true
+        },
+        "mode": {
+          "$ref": "#/$defs/DisplayMode"
+        },
+        "orientation": {
+          "$ref": "#/$defs/Orientation"
+        },
+        "readings": {
+          "description": "Reading 1 and Reading 2, in the order they are drawn.",
+          "items": {
+            "$ref": "#/$defs/ReadingSlot"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "mode",
+        "readings",
+        "background",
+        "orientation",
+        "brightness"
+      ],
+      "type": "object"
+    },
+    "DisplayState": {
+      "description": "What the panel is currently showing, as far as the daemon knows.",
+      "properties": {
+        "animation_started_at_unix_ms": {
+          "description": "When the animation the panel is playing started, while one plays.\n\nThe daemon walks an animation on the wall clock from this instant, a\nlate tick skipping the frames it slept through, so the frame on the\nglass at any moment is this time's distance into the picture's own\ndelays. A window that stopped its preview while hidden resumes it there\ninstead of at the first frame. `None` for a still picture and for every\nother mode.\nIn milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "changed_by": {
+          "$ref": "#/$defs/Attribution"
+        },
+        "committed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DisplayPreset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last preset the daemon committed, when it has committed one."
+        },
+        "dropped_frames": {
+          "description": "Frames dropped because a transfer was still in flight when the next\nsample arrived. The streamer keeps at most one frame pending, so this\ncounts what that ceiling discarded.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed_transfers": {
+          "description": "Transfers that failed since the daemon started.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "faulted": {
+          "description": "Why the stream stopped, once a transfer failed.\n\n[`DisplayState::streaming`] cannot say this on its own: it is equally\nfalse for a preset that reads no telemetry and for a panel that was\nnever written. The daemon retries a faulted stream on a widening wait\nand clears this only once a frame lands, so a fault still standing is a\npanel still frozen, and a screen that cannot see it cannot offer the\noperator the faster way back.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frames_sent": {
+          "description": "Frames the panel took since the daemon started.\n\nThe steady state of the stream lives here rather than in the event log:\na healthy frame a second is not an event, and recording each one used to\npush every other event out of the ring within minutes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_frame_at_unix_ms": {
+          "description": "When the panel last took a frame, if it ever did.\nIn milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "panel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LcdPanel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Geometry a frame must match, when the panel answered at all."
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "streaming": {
+          "description": "True while a preset that reads telemetry is being streamed.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "streaming",
+        "revision",
+        "changed_by",
+        "dropped_frames",
+        "frames_sent",
+        "failed_transfers"
+      ],
+      "type": "object"
+    },
+    "EffectDirection": {
+      "description": "Which way an animated effect travels along the strip.",
+      "enum": [
+        "forward",
+        "backward"
+      ],
+      "type": "string"
+    },
+    "EffectSpeed": {
+      "description": "The five animation speeds the controller accepts.",
+      "enum": [
+        "slowest",
+        "slower",
+        "normal",
+        "faster",
+        "fastest"
+      ],
+      "type": "string"
+    },
+    "EventPage": {
+      "description": "One page of the event log, as the `events` request answers it.",
+      "properties": {
+        "events": {
+          "description": "Oldest first.",
+          "items": {
+            "$ref": "#/$defs/DiagnosticEvent"
+          },
+          "type": "array"
+        },
+        "latest_seq": {
+          "description": "Sequence number of the newest event recorded, 0 when none was.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missed": {
+          "description": "Events after the requested cursor that the ring no longer holds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "oldest_seq": {
+          "description": "Sequence number of the oldest event still held, 0 when none is.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "oldest_seq",
+        "latest_seq",
+        "missed",
+        "events"
+      ],
+      "type": "object"
+    },
+    "Evidenced_Array_of_RgbChannel": {
+      "description": "A value that is either observed with its evidence, or explicitly unknown.",
+      "oneOf": [
+        {
+          "description": "The value was read from `source`.",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "known",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "$ref": "#/$defs/RgbChannel"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "state",
+            "value",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The value could not be established, and `reason` says what was tried.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Evidenced_LcdDisplaySettings": {
+      "description": "A value that is either observed with its evidence, or explicitly unknown.",
+      "oneOf": [
+        {
+          "description": "The value was read from `source`.",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "known",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/LcdDisplaySettings"
+            }
+          },
+          "required": [
+            "state",
+            "value",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The value could not be established, and `reason` says what was tried.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Evidenced_LcdPanel": {
+      "description": "A value that is either observed with its evidence, or explicitly unknown.",
+      "oneOf": [
+        {
+          "description": "The value was read from `source`.",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "known",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/LcdPanel"
+            }
+          },
+          "required": [
+            "state",
+            "value",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The value could not be established, and `reason` says what was tried.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Evidenced_string": {
+      "description": "A value that is either observed with its evidence, or explicitly unknown.",
+      "oneOf": [
+        {
+          "description": "The value was read from `source`.",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "known",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "value",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The value could not be established, and `reason` says what was tried.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Evidenced_uint16": {
+      "description": "A value that is either observed with its evidence, or explicitly unknown.",
+      "oneOf": [
+        {
+          "description": "The value was read from `source`.",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "known",
+              "type": "string"
+            },
+            "value": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "state",
+            "value",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The value could not be established, and `reason` says what was tried.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "GpuTelemetry": {
+      "description": "The GPU the collector could reach, and what it reported.",
+      "properties": {
+        "at_unix_ms": {
+          "description": "When this section was sampled, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "load_percent": {
+          "$ref": "#/$defs/Reading_float",
+          "description": "GPU utilization, in percent (0 to 100)."
+        },
+        "name": {
+          "$ref": "#/$defs/Reading_string"
+        },
+        "source": {
+          "description": "Interface the values came from, for example `NVML`.",
+          "type": "string"
+        },
+        "temperature_c": {
+          "$ref": "#/$defs/Reading_float",
+          "description": "GPU core temperature, in degrees Celsius."
+        }
+      },
+      "required": [
+        "at_unix_ms",
+        "source",
+        "name",
+        "load_percent",
+        "temperature_c"
+      ],
+      "type": "object"
+    },
+    "HardwareState": {
+      "description": "How much of the hardware state the daemon can vouch for.",
+      "oneOf": [
+        {
+          "description": "The device is running its own firmware program and nothing was written.",
+          "properties": {
+            "state": {
+              "const": "onboard",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The daemon wrote the program and read it back.",
+          "properties": {
+            "state": {
+              "const": "confirmed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The profile was selected but not written, and `reason` says why.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "const": "not_applied",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A write started and could not be confirmed. No further write is sent\nuntil a readback succeeds.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "const": "uncertain",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "HistoryLimit": {
+      "description": "Which limit a history request crossed.",
+      "oneOf": [
+        {
+          "enum": [
+            "window_multiple_of_step"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "metrics",
+          "description": "`metrics` was given and empty.",
+          "type": "string"
+        },
+        {
+          "const": "window",
+          "description": "`window_s` was zero.",
+          "type": "string"
+        },
+        {
+          "const": "step",
+          "description": "`step_s` was zero, or between one minute and two without being whole\nminutes.",
+          "type": "string"
+        },
+        {
+          "const": "second_tier_window",
+          "description": "A step under 60 s with a window past the second tier.",
+          "type": "string"
+        },
+        {
+          "const": "minute_tier_window",
+          "description": "A step in whole minutes with a window past the minute tier.",
+          "type": "string"
+        },
+        {
+          "const": "max_slots",
+          "description": "More than [`MAX_POINTS`] points per metric.",
+          "type": "string"
+        },
+        {
+          "const": "max_values",
+          "description": "More than [`MAX_VALUES`] numbers in all.",
+          "type": "string"
+        }
+      ]
+    },
+    "HistoryMetric": {
+      "description": "Every series the daemon records, in the order a reply lists them.",
+      "oneOf": [
+        {
+          "const": "cpu_load",
+          "description": "CPU utilization, in percent.",
+          "type": "string"
+        },
+        {
+          "const": "cpu_temperature",
+          "description": "CPU package temperature, in degrees Celsius.",
+          "type": "string"
+        },
+        {
+          "const": "gpu_load",
+          "description": "GPU utilization, in percent.",
+          "type": "string"
+        },
+        {
+          "const": "gpu_temperature",
+          "description": "GPU core temperature, in degrees Celsius.",
+          "type": "string"
+        },
+        {
+          "const": "memory_used",
+          "description": "Memory in use, in mebibytes.",
+          "type": "string"
+        },
+        {
+          "const": "liquid_temperature",
+          "description": "Coolant temperature, in degrees Celsius.",
+          "type": "string"
+        },
+        {
+          "const": "pump_speed",
+          "description": "Pump speed, in RPM.",
+          "type": "string"
+        },
+        {
+          "const": "fan_speed",
+          "description": "Fan speed, in RPM.",
+          "type": "string"
+        },
+        {
+          "const": "pump_duty",
+          "description": "Pump duty, in percent of full scale.",
+          "type": "string"
+        },
+        {
+          "const": "fan_duty",
+          "description": "Fan duty, in percent of full scale.",
+          "type": "string"
+        }
+      ]
+    },
+    "HistoryReply": {
+      "description": "The answer to a `history` request.",
+      "properties": {
+        "available_s": {
+          "description": "Seconds of history the tier read actually holds, at most its capacity.\nSlots older than this are null.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "end_unix_ms": {
+          "description": "Wall-clock time of the newest slot of the tier read. It follows the\nclock, so after a clock step the older slots' times are approximate:\na slot is one tick, not one timestamp.\nIn milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "$ref": "#/$defs/MetricHistory"
+          },
+          "type": "object"
+        },
+        "slots": {
+          "description": "Points per metric.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "step_s": {
+          "description": "Seconds each point covers.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "end_unix_ms",
+        "step_s",
+        "slots",
+        "available_s",
+        "metrics"
+      ],
+      "type": "object"
+    },
+    "HwmonAttribute": {
+      "description": "One `hwmon` attribute the probe resolved.",
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "Label exposed by the driver, when it publishes one."
+        },
+        "name": {
+          "description": "Attribute file name, for example `temp1_input`.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "readable": {
+          "type": "boolean"
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "readable",
+        "writable",
+        "label"
+      ],
+      "type": "object"
+    },
+    "HwmonCapabilities": {
+      "description": "The `hwmon` surface of a device bound to a kernel driver.",
+      "properties": {
+        "attributes": {
+          "items": {
+            "$ref": "#/$defs/HwmonAttribute"
+          },
+          "type": "array"
+        },
+        "curve_points": {
+          "description": "Number of `tempN_auto_pointM_pwm` files found per channel.",
+          "items": {
+            "$ref": "#/$defs/CurveChannel"
+          },
+          "type": "array"
+        },
+        "driver": {
+          "description": "Driver name, for example `kraken2023`.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "driver",
+        "path",
+        "attributes",
+        "curve_points"
+      ],
+      "type": "object"
+    },
+    "Incompatibility": {
+      "description": "A capability a profile needs that the device cannot provide.",
+      "properties": {
+        "capability": {
+          "$ref": "#/$defs/CapabilityId"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "IpcError": {
+      "description": "Every way a request can be refused, with enough detail to render it.",
+      "oneOf": [
+        {
+          "properties": {
+            "error": {
+              "const": "unsupported_protocol",
+              "type": "string"
+            },
+            "requested": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "supported": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "error",
+            "requested",
+            "supported"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "error": {
+              "const": "malformed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "const": "frame_too_large",
+              "type": "string"
+            },
+            "max_bytes": {
+              "description": "The frame ceiling, in bytes.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "error",
+            "max_bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "const": "handshake_required",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "const": "peer_rejected",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ValidationError",
+          "properties": {
+            "error": {
+              "const": "validation",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/LightingError",
+          "properties": {
+            "error": {
+              "const": "lighting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DisplayError",
+          "properties": {
+            "error": {
+              "const": "display",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "const": "read_only",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "details": {
+              "items": {
+                "$ref": "#/$defs/Incompatibility"
+              },
+              "type": "array"
+            },
+            "error": {
+              "const": "incompatible",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "details"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "const": "profile_not_found",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "const": "profile_name_unavailable",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "const": "no_device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "error": {
+              "const": "io",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "changed_by": {
+              "$ref": "#/$defs/Attribution"
+            },
+            "channel": {
+              "description": "The lighting channel, for a lighting conflict.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "current": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "domain": {
+              "$ref": "#/$defs/WriteDomain"
+            },
+            "error": {
+              "const": "conflict",
+              "type": "string"
+            },
+            "expected": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "error",
+            "domain",
+            "expected",
+            "current",
+            "changed_by"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "const": "subscription_limit",
+              "type": "string"
+            },
+            "max": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "error",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "error": {
+              "const": "history_out_of_range",
+              "type": "string"
+            },
+            "limit": {
+              "$ref": "#/$defs/HistoryLimit"
+            }
+          },
+          "required": [
+            "error",
+            "limit",
+            "detail"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "KrakenTelemetry": {
+      "description": "The Kraken's own readings.\n\nEach section carries the time *it* was sampled rather than inheriting the\nsnapshot's. The collectors run independently, so one that wedges must be\nvisible as one aging section next to sections that are still current.",
+      "properties": {
+        "at_unix_ms": {
+          "description": "When this section was sampled, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fan": {
+          "$ref": "#/$defs/ChannelTelemetry"
+        },
+        "liquid_temperature_c": {
+          "$ref": "#/$defs/Reading_float",
+          "description": "Coolant temperature, in degrees Celsius."
+        },
+        "present": {
+          "description": "False when no supported Kraken is bound to a `hwmon` instance.",
+          "type": "boolean"
+        },
+        "pump": {
+          "$ref": "#/$defs/ChannelTelemetry"
+        }
+      },
+      "required": [
+        "at_unix_ms",
+        "present",
+        "liquid_temperature_c",
+        "pump",
+        "fan"
+      ],
+      "type": "object"
+    },
+    "LcdDisplaySettings": {
+      "description": "What the panel says it is currently set to.",
+      "properties": {
+        "brightness_percent": {
+          "description": "Panel brightness, in percent (0 to 100).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "quarter_turns": {
+          "description": "Orientation as the device counts it: `0` through `3`, each a quarter turn.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "brightness_percent",
+        "quarter_turns"
+      ],
+      "type": "object"
+    },
+    "LcdMetric": {
+      "description": "A telemetry value a reading slot can be pointed at.\n\nEvery entry resolves to a field of [`TelemetrySnapshot`] that an\nexisting collector fills. A metric the daemon does not sample has no\nvariant here, because a select entry that can only ever render `--` is a\nfabricated capability.\n\nThe label is the full name, for the editor's select. The panel draws\n[`LcdMetric::caption`] instead, which is what fits on the glass.",
+      "enum": [
+        "cpu_temperature",
+        "gpu_temperature",
+        "liquid_temperature",
+        "cpu_load",
+        "gpu_load"
+      ],
+      "type": "string"
+    },
+    "LcdPanel": {
+      "description": "Geometry and pixel format one frame must match exactly.",
+      "properties": {
+        "bulk_endpoint": {
+          "description": "Bulk endpoint address the framebuffer is written to.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bulk_interface": {
+          "description": "USB interface that endpoint belongs to.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frame_bytes": {
+          "description": "Exact payload size of one frame, in bytes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "height": {
+          "description": "Framebuffer height, in pixels.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pixel_format": {
+          "description": "Human-readable pixel format, for example `RGB565 big-endian`.",
+          "type": "string"
+        },
+        "shape": {
+          "$ref": "#/$defs/LcdPanelShape"
+        },
+        "width": {
+          "description": "Framebuffer width, in pixels.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "shape",
+        "pixel_format",
+        "frame_bytes",
+        "bulk_endpoint",
+        "bulk_interface"
+      ],
+      "type": "object"
+    },
+    "LcdPanelShape": {
+      "description": "The shape of the physical panel behind the framebuffer.\n\nA circular panel still takes a square framebuffer; the corners simply are\nnot visible. The renderer needs to know which, so nothing meaningful is laid\nout where the glass ends.",
+      "enum": [
+        "circular",
+        "square"
+      ],
+      "type": "string"
+    },
+    "LcdTopology": {
+      "description": "What the Kraken answered about its panel, and what this product asserts.\n\nThe two are deliberately not mixed. `firmware` and `display` come from the\ndevice: it answers a report carrying its revision, and another carrying the\nbrightness and orientation it is currently set to. A device with no panel\nanswers neither, which is what makes them evidence rather than decoration.\n\n`panel` is different. No report on this device reports a resolution, so the\ngeometry is a candidate carried by this product for this exact product id,\nand its `source` says so. Nothing is written on the strength of a candidate:\nthe capability gate turns on a validated firmware, and a firmware becomes\nvalidated only through a write probe an operator watched.",
+      "properties": {
+        "bulk_node": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "`usbfs` node the framebuffer's bulk endpoint is reached through."
+        },
+        "display": {
+          "$ref": "#/$defs/Evidenced_LcdDisplaySettings",
+          "description": "Brightness and orientation the panel reports it is currently using."
+        },
+        "firmware": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "Firmware the Kraken reports, which is not the USB `bcdDevice`."
+        },
+        "hid_node": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "`hidraw` node the display commands travel over."
+        },
+        "panel": {
+          "$ref": "#/$defs/Evidenced_LcdPanel",
+          "description": "Geometry and pixel format a frame must be laid out in."
+        }
+      },
+      "required": [
+        "hid_node",
+        "bulk_node",
+        "firmware",
+        "panel",
+        "display"
+      ],
+      "type": "object"
+    },
+    "LightingCommand": {
+      "additionalProperties": false,
+      "description": "A program addressed to one channel of the controller.",
+      "properties": {
+        "channel": {
+          "description": "One-based channel index, matching the label on the controller.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "program": {
+          "$ref": "#/$defs/LightingProgram"
+        }
+      },
+      "required": [
+        "channel",
+        "program"
+      ],
+      "type": "object"
+    },
+    "LightingEffect": {
+      "description": "The animated effects this product exposes.\n\nThe list is short on purpose: an effect appears here only once the write\nprobe has run its exact command on the owned controller. Adding a\nvariant without that evidence is forbidden.",
+      "enum": [
+        "breathing",
+        "spectrum_wave"
+      ],
+      "type": "string"
+    },
+    "LightingError": {
+      "description": "Why a lighting value or command was refused.\n\nEach variant carries what the control needs to point at the invalid field\nwithout restating the bounds.",
+      "oneOf": [
+        {
+          "properties": {
+            "actual": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "expected": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "color_digits",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "expected",
+            "actual"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "color_alphabet",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "brightness_out_of_range",
+              "type": "string"
+            },
+            "max": {
+              "description": "Highest brightness accepted, in percent.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "value": {
+              "description": "The brightness refused, in percent.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "available": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "channel": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "channel_unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "channel",
+            "available"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "actual": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "effect": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "color_count",
+              "type": "string"
+            },
+            "max": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "min": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "effect",
+            "min",
+            "max",
+            "actual"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "effect": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "direction_unsupported",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "effect"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "channel": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "elapsed_ms": {
+              "description": "Time since the previous command, in milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "cadence_too_fast",
+              "type": "string"
+            },
+            "minimum_interval_ms": {
+              "description": "Shortest wait between two commands to one channel, in milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "channel",
+            "minimum_interval_ms",
+            "elapsed_ms"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LightingOutcome": {
+      "description": "The result of one lighting command.\n\nThe controller acknowledges no state: there is no report that reads a\nchannel's current color back. The daemon is the sole writer, so its record\nof what it committed is the only evidence of what the channel is showing,\nwhich is the same reasoning the write-only curve attributes already follow.\n`Confirmed` therefore means the controller accepted the report, and nothing\nstronger is claimed anywhere.",
+      "properties": {
+        "channel": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deduplicated": {
+          "type": "boolean"
+        },
+        "hardware": {
+          "$ref": "#/$defs/HardwareState"
+        },
+        "program": {
+          "$ref": "#/$defs/LightingProgram"
+        },
+        "writes": {
+          "description": "Reports actually sent. Zero means the request matched the committed\nstate and was deduplicated.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "channel",
+        "program",
+        "hardware",
+        "writes",
+        "deduplicated"
+      ],
+      "type": "object"
+    },
+    "LightingProgram": {
+      "description": "What one channel should display.",
+      "oneOf": [
+        {
+          "description": "Every LED on the channel dark.",
+          "properties": {
+            "mode": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One constant color across the channel.",
+          "properties": {
+            "brightness": {
+              "$ref": "#/$defs/Brightness"
+            },
+            "color": {
+              "$ref": "#/$defs/Rgb"
+            },
+            "mode": {
+              "const": "fixed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "color",
+            "brightness"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A validated animation.",
+          "properties": {
+            "brightness": {
+              "$ref": "#/$defs/Brightness"
+            },
+            "colors": {
+              "description": "As many colors as the effect accepts, and no more.",
+              "items": {
+                "$ref": "#/$defs/Rgb"
+              },
+              "type": "array"
+            },
+            "direction": {
+              "$ref": "#/$defs/EffectDirection"
+            },
+            "effect": {
+              "$ref": "#/$defs/LightingEffect"
+            },
+            "mode": {
+              "const": "effect",
+              "type": "string"
+            },
+            "speed": {
+              "$ref": "#/$defs/EffectSpeed"
+            }
+          },
+          "required": [
+            "mode",
+            "effect",
+            "colors",
+            "brightness",
+            "speed",
+            "direction"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MemoryUsage": {
+      "description": "Memory occupancy in bytes, so the client picks the unit it displays.",
+      "properties": {
+        "total_bytes": {
+          "description": "Memory installed, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "used_bytes": {
+          "description": "Memory in use, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "used_bytes",
+        "total_bytes"
+      ],
+      "type": "object"
+    },
+    "MetricHistory": {
+      "description": "One metric of a history reply.",
+      "properties": {
+        "avg": {
+          "description": "One number or null per point, oldest first, when points were asked for.",
+          "items": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "max": {
+          "description": "The largest reading behind each point, when a point folds several.",
+          "items": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "min": {
+          "description": "The smallest reading behind each point, when a point folds several.",
+          "items": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Summary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`None` when the window holds no reading at all."
+        },
+        "unit": {
+          "description": "The unit every number of this metric is in: `percent`, `celsius`,\n`mebibytes` or `rpm`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit"
+      ],
+      "type": "object"
+    },
+    "Orientation": {
+      "description": "How the picture is turned before it reaches the panel.\n\nThe renderer applies this to the framebuffer, so the preview and the panel\nshow the same thing. The device is left on its own orientation zero, which\nis what keeps the two in step: a rotation applied in two places at once\nwould cancel or double.",
+      "enum": [
+        "deg0",
+        "deg90",
+        "deg180",
+        "deg270"
+      ],
+      "type": "string"
+    },
+    "OwnershipConflict": {
+      "description": "Another process or a permission problem preventing ownership.",
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "device": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeviceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resource": {
+          "description": "Path or resource the conflict was observed on.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "ProbeContext": {
+      "description": "Context of the machine the probe ran on.",
+      "properties": {
+        "kernel_release": {
+          "$ref": "#/$defs/Evidenced_string"
+        },
+        "probed_at_unix_ms": {
+          "description": "Milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kernel_release",
+        "probed_at_unix_ms"
+      ],
+      "type": "object"
+    },
+    "Profile": {
+      "additionalProperties": false,
+      "description": "A named local profile.\n\nUnknown fields are refused: an unrecognized key means the file or frame came\nfrom a version this build cannot interpret, which is a recovery case rather\nthan something to silently ignore.",
+      "properties": {
+        "device": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeviceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Device the profile was created for, when it is device-specific."
+        },
+        "display": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DisplayPreset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the panel should show, when the profile sets anything.\n\nA description only: no resolution, no pixel and no protocol byte, for\nthe same reason the lighting field stores named colors rather than\npackets. Defaulted so a profile written before the panel existed loads."
+        },
+        "lighting": {
+          "default": [],
+          "description": "What each lighting channel should show, when the profile sets any.\n\nStored as named colors, effects and speeds. No packet, report\nidentifier or byte sequence enters the configuration file, so a stored\nprofile never pins the product to one reverse-engineered encoding.\n\nDefaulted so a profile written before lighting existed still loads.",
+          "items": {
+            "$ref": "#/$defs/LightingCommand"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "program": {
+          "$ref": "#/$defs/CoolingProgram"
+        }
+      },
+      "required": [
+        "name",
+        "program"
+      ],
+      "type": "object"
+    },
+    "Push": {
+      "description": "A frame the daemon pushes on a subscribed connection, tagged `push`.\n\nA third tag beside `request` and `response`, so a reader can never take a\npush for the answer to something it asked.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TelemetrySnapshot",
+          "properties": {
+            "push": {
+              "const": "telemetry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "push"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DaemonStatus",
+          "properties": {
+            "push": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "push"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DiagnosticEvent",
+          "properties": {
+            "push": {
+              "const": "event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "push"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Nothing else was written for [`HEARTBEAT_INTERVAL`]. A subscriber that\nsees neither this nor anything else for longer knows the daemon is gone.",
+          "properties": {
+            "at_unix_ms": {
+              "description": "When the heartbeat was sent, in milliseconds since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "push": {
+              "const": "heartbeat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "push",
+            "at_unix_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Events this subscriber will never see: they left the ring before it\ncould be sent them, or it fell [`SUBSCRIBER_QUEUE`] frames behind.",
+          "properties": {
+            "missed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "push": {
+              "const": "lagged",
+              "type": "string"
+            }
+          },
+          "required": [
+            "push",
+            "missed"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The daemon is shutting down and closes this connection next.",
+          "properties": {
+            "push": {
+              "const": "closing",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "push",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PwmMode": {
+      "description": "Control mode of one kernel PWM channel.\n\nThe values are the `pwm[1-2]_enable` ABI of `nzxt-kraken3`. Mode 0 is the\nfirmware failsafe, not \"off\": the kernel documents it as running the channel\nat 100%.",
+      "oneOf": [
+        {
+          "const": "full_speed",
+          "description": "`0`: the channel runs at 100%.",
+          "type": "string"
+        },
+        {
+          "const": "fixed",
+          "description": "`1`: the channel follows the value written to `pwmN`.",
+          "type": "string"
+        },
+        {
+          "const": "curve",
+          "description": "`2`: the channel follows the onboard curve over coolant temperature.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReadingSlot": {
+      "additionalProperties": false,
+      "description": "One metric slot of the infographic: what it shows and in which colors.\n\nThe band and the text are colored separately, which is the split the\nreference screens make: the band carries the color, and the value reads in\nthe same color as its caption. A band may shade between two colors in the\nlayouts that draw it long enough for a shade to register.",
+      "properties": {
+        "metric": {
+          "$ref": "#/$defs/LcdMetric"
+        },
+        "reading": {
+          "$ref": "#/$defs/Rgb",
+          "description": "Color the band starts on, at the foot of its sweep."
+        },
+        "reading_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rgb"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Color the band reaches at the head of its sweep.\n\n`None` is a solid band. It is also what a preset written before this\nfield existed deserializes to, which is why it is optional rather than\ndefaulted to a color nobody chose."
+        },
+        "text": {
+          "$ref": "#/$defs/Rgb",
+          "description": "Color of the value and of the caption under it."
+        }
+      },
+      "required": [
+        "metric",
+        "reading",
+        "text"
+      ],
+      "type": "object"
+    },
+    "Reading_MemoryUsage": {
+      "description": "One sampled metric.",
+      "oneOf": [
+        {
+          "properties": {
+            "reading": {
+              "const": "valid",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/MemoryUsage"
+            }
+          },
+          "required": [
+            "reading",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Unavailable"
+            },
+            "reading": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reading",
+            "cause"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Reading_PwmMode": {
+      "description": "One sampled metric.",
+      "oneOf": [
+        {
+          "properties": {
+            "reading": {
+              "const": "valid",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/PwmMode"
+            }
+          },
+          "required": [
+            "reading",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Unavailable"
+            },
+            "reading": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reading",
+            "cause"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Reading_float": {
+      "description": "One sampled metric.",
+      "oneOf": [
+        {
+          "properties": {
+            "reading": {
+              "const": "valid",
+              "type": "string"
+            },
+            "value": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "reading",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Unavailable"
+            },
+            "reading": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reading",
+            "cause"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Reading_string": {
+      "description": "One sampled metric.",
+      "oneOf": [
+        {
+          "properties": {
+            "reading": {
+              "const": "valid",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reading",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Unavailable"
+            },
+            "reading": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reading",
+            "cause"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Reading_uint32": {
+      "description": "One sampled metric.",
+      "oneOf": [
+        {
+          "properties": {
+            "reading": {
+              "const": "valid",
+              "type": "string"
+            },
+            "value": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "reading",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Unavailable"
+            },
+            "reading": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reading",
+            "cause"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Reading_uint8": {
+      "description": "One sampled metric.",
+      "oneOf": [
+        {
+          "properties": {
+            "reading": {
+              "const": "valid",
+              "type": "string"
+            },
+            "value": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "reading",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Unavailable"
+            },
+            "reading": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reading",
+            "cause"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RejectedDevice": {
+      "description": "A device seen during enumeration and deliberately left untouched.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/DeviceId"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "sysfs_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sysfs_path",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Request": {
+      "description": "A request from the GPUI client to the daemon.",
+      "oneOf": [
+        {
+          "description": "Negotiate the protocol version, and optionally name the client. Sent\nbefore anything else.\n\n`client` is a label the connection chooses for itself, checked by\n[`validate_client_name`]. It is not proof of anything: the process ID\nand the user a write is attributed to come from the kernel, and the name\nonly makes the attribution readable.",
+          "properties": {
+            "client": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "protocol_version": {
+              "description": "The protocol this client speaks. Any other than the daemon's own\nis refused with `unsupported_protocol`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "request": {
+              "const": "hello",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "protocol_version"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Current daemon, device and ownership state.",
+          "properties": {
+            "request": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The versioned capability record for every allowlisted device.",
+          "properties": {
+            "request": {
+              "const": "capabilities",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Every stored profile plus the active one.",
+          "properties": {
+            "request": {
+              "const": "profiles",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Store a profile, replacing one with the same name.",
+          "properties": {
+            "profile": {
+              "$ref": "#/$defs/Profile"
+            },
+            "request": {
+              "const": "save_profile",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "profile"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Make a stored profile active.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "request": {
+              "const": "activate_profile",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Remove a stored profile. The safe profile is activated first when the\ndeleted profile is the active one.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "request": {
+              "const": "delete_profile",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The most recent sampling pass.",
+          "properties": {
+            "request": {
+              "const": "telemetry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Apply a cooling program directly, without saving it as a profile.\n\nThis is what the Cooling screen's Apply activates. The daemon\nrevalidates every value before the first write.\n\nWith `expect_revision`, the write is refused with\n[`IpcError::Conflict`] unless the cooling revision is still that one.",
+          "properties": {
+            "expect_revision": {
+              "description": "Refuse with `conflict` unless the domain is still at this revision.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "program": {
+              "$ref": "#/$defs/CoolingProgram"
+            },
+            "request": {
+              "const": "apply_program",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "program"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Apply a lighting program to one channel of the RGB controller.\n\nThe daemon revalidates the program, checks it against the topology the\ncontroller reported, and enforces the command cadence before any byte\nis sent.\n\n`expect_revision` is the revision of the channel the command names.",
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/LightingCommand"
+            },
+            "expect_revision": {
+              "description": "Refuse with `conflict` unless the domain is still at this revision.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "request": {
+              "const": "apply_lighting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Show a preset on the Kraken's panel.\n\nThe preset travels, never the pixels: the daemon renders it with the\nsame crate the client previews it with, so the two cannot drift, and a\npanel keeps updating after the window closes.",
+          "properties": {
+            "expect_revision": {
+              "description": "Refuse with `conflict` unless the domain is still at this revision.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "preset": {
+              "$ref": "#/$defs/DisplayPreset"
+            },
+            "request": {
+              "const": "apply_display",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "preset"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Redacted diagnostics for an issue report.",
+          "properties": {
+            "request": {
+              "const": "diagnostics",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A page of the event log.\n\nWith `after_seq`, the events recorded after it, oldest first; without,\nthe newest ones. `limit` defaults to\n[`crate::diagnostics::EVENTS_DEFAULT_LIMIT`] and may not exceed\n[`crate::diagnostics::EVENTS_MAX_LIMIT`].",
+          "properties": {
+            "after_seq": {
+              "description": "Only the events recorded after this sequence number, oldest first.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "limit": {
+              "description": "Most events in the page: default 100, at most 512.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "request": {
+              "const": "events",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Recorded telemetry, summarized and optionally as points.\n\nEvery field is optional: `metrics` defaults to all of them, `window_s`\nto 900, `step_s` to 1 for a window up to 900 s and to 60 beyond, and\n`points` to false. The limits are in [`crate::history`].",
+          "properties": {
+            "metrics": {
+              "items": {
+                "$ref": "#/$defs/HistoryMetric"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "points": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "request": {
+              "const": "history",
+              "type": "string"
+            },
+            "step_s": {
+              "description": "Seconds each point covers: 1 to 59 within the second tier, a\nwhole number of minutes beyond.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "window_s": {
+              "description": "How far back, in seconds: default 900, at most 86400.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Turn this connection into a pushed stream.\n\nAnswered with [`Response::Subscribed`]; from then on the connection\ncarries only [`Push`] frames, and nothing the client sends is read. The\nclient unsubscribes by closing the connection. `interval_s` (1 to 60,\ndefault 1) paces the telemetry push in ticks of the daemon's one-second\nclock. With `after_seq`, the events after it are pushed first.",
+          "properties": {
+            "after_seq": {
+              "description": "Push the events recorded after this sequence number first.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "interval_s": {
+              "description": "Seconds between two telemetry pushes, 1 to 60. Default 1.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "request": {
+              "const": "subscribe",
+              "type": "string"
+            },
+            "topics": {
+              "items": {
+                "$ref": "#/$defs/Topic"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "request",
+            "topics"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Response": {
+      "description": "A response from the daemon.\n\nNot `Eq`: a telemetry snapshot carries floating-point readings, and an\nequality that silently compared them would invite exactly the wrong kind of\nassertion.",
+      "oneOf": [
+        {
+          "properties": {
+            "connection": {
+              "description": "This connection's number, unique for the life of the daemon. It is\nwhat the daemon's events and revisions name this connection by.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "daemon_version": {
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "The protocol the daemon speaks.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response": {
+              "const": "hello",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response",
+            "protocol_version",
+            "daemon_version",
+            "connection"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DaemonStatus",
+          "properties": {
+            "response": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/CapabilityRecord",
+          "properties": {
+            "response": {
+              "const": "capabilities",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "active": {
+              "type": "string"
+            },
+            "profiles": {
+              "items": {
+                "$ref": "#/$defs/Profile"
+              },
+              "type": "array"
+            },
+            "response": {
+              "const": "profiles",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response",
+            "active",
+            "profiles"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ActivationOutcome",
+          "properties": {
+            "response": {
+              "const": "activated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "response": {
+              "const": "saved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "activated_instead": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "response": {
+              "const": "deleted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/TelemetrySnapshot",
+          "properties": {
+            "response": {
+              "const": "telemetry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ApplyOutcome",
+          "properties": {
+            "response": {
+              "const": "applied",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/LightingOutcome",
+          "properties": {
+            "response": {
+              "const": "lit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DisplayOutcome",
+          "properties": {
+            "response": {
+              "const": "shown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DiagnosticsExport",
+          "properties": {
+            "response": {
+              "const": "diagnostics",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/EventPage",
+          "properties": {
+            "response": {
+              "const": "events",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/HistoryReply",
+          "properties": {
+            "response": {
+              "const": "history",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "interval_s": {
+              "description": "Seconds between two telemetry pushes.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response": {
+              "const": "subscribed",
+              "type": "string"
+            },
+            "topics": {
+              "items": {
+                "$ref": "#/$defs/Topic"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "response",
+            "topics",
+            "interval_s"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/IpcError",
+          "properties": {
+            "response": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Rgb": {
+      "additionalProperties": false,
+      "description": "A 24-bit color, as the operator typed it.",
+      "properties": {
+        "b": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "g": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "r": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "r",
+        "g",
+        "b"
+      ],
+      "type": "object"
+    },
+    "RgbAccessory": {
+      "description": "One accessory the controller detected on a channel.",
+      "properties": {
+        "id": {
+          "description": "Identifier byte the controller returned.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name for that identifier, or an explicit unknown marker.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "RgbChannel": {
+      "description": "One addressable lighting channel and what is plugged into it.",
+      "properties": {
+        "accessories": {
+          "description": "Accessories the controller detected on this channel.",
+          "items": {
+            "$ref": "#/$defs/RgbAccessory"
+          },
+          "type": "array"
+        },
+        "index": {
+          "description": "One-based index, matching the label printed on the controller.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "led_count": {
+          "$ref": "#/$defs/Evidenced_uint16",
+          "description": "LEDs on the channel.\n\nThe controller reports accessory identifiers, not LED counts, so this is\n`Unknown` on every accessory whose LED count has not been counted on\nreal hardware. A control that needs it must read it, not assume it."
+        }
+      },
+      "required": [
+        "index",
+        "accessories",
+        "led_count"
+      ],
+      "type": "object"
+    },
+    "RgbTopology": {
+      "description": "What the RGB controller answered about itself.\n\nEvery field is separately evidenced because they fail separately: the node\ncan exist while permission is missing, and permission can be granted while\nthe controller answers nothing. A field that could not be established says\nso, and the capability state that reads it stays unvalidated rather than\nfalling back to a plausible topology.",
+      "properties": {
+        "channels": {
+          "$ref": "#/$defs/Evidenced_Array_of_RgbChannel",
+          "description": "Channels the controller reports, in index order."
+        },
+        "firmware": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "Firmware the controller reports, which is not the USB `bcdDevice`."
+        },
+        "node": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "`hidraw` node the transport would use."
+        }
+      },
+      "required": [
+        "node",
+        "firmware",
+        "channels"
+      ],
+      "type": "object"
+    },
+    "SafetyAlert": {
+      "description": "A condition the Cooling screen must surface immediately.",
+      "oneOf": [
+        {
+          "description": "The coolant is at or above the failsafe threshold.",
+          "properties": {
+            "alert": {
+              "const": "liquid_critical",
+              "type": "string"
+            },
+            "temperature_c": {
+              "description": "Coolant temperature, in degrees Celsius.",
+              "format": "float",
+              "type": "number"
+            },
+            "threshold_c": {
+              "description": "The failsafe threshold, in degrees Celsius.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "alert",
+            "temperature_c",
+            "threshold_c"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A commanded channel has reported zero RPM for several samples.",
+          "properties": {
+            "alert": {
+              "const": "channel_stalled",
+              "type": "string"
+            },
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "commanded_duty": {
+              "description": "Duty the daemon commanded, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rpm": {
+              "description": "Speed the tachometer reports, in RPM.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "samples": {
+              "description": "Consecutive samples read at zero RPM.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "alert",
+            "channel",
+            "commanded_duty",
+            "samples",
+            "rpm"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Severity": {
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "type": "string"
+    },
+    "Summary": {
+      "description": "What a window held for one metric, computed by the daemon.",
+      "properties": {
+        "avg": {
+          "description": "Mean of the readings in the window, in the metric's unit.",
+          "format": "float",
+          "type": "number"
+        },
+        "last": {
+          "description": "The newest value in the window: the newest reading for the second\ntier, the newest minute's average for the minute tier.",
+          "format": "float",
+          "type": "number"
+        },
+        "max": {
+          "description": "Largest reading in the window, in the metric's unit.",
+          "format": "float",
+          "type": "number"
+        },
+        "min": {
+          "description": "Smallest reading in the window, in the metric's unit (`unit`).",
+          "format": "float",
+          "type": "number"
+        },
+        "samples": {
+          "description": "Readings the window is made of.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "min",
+        "avg",
+        "max",
+        "last",
+        "samples"
+      ],
+      "type": "object"
+    },
+    "SupportState": {
+      "description": "Whether the product is allowed to talk to a discovered device at all.",
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "supported",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Discovered but outside the allowlist. Nothing is opened.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unsupported",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SystemTelemetry": {
+      "description": "CPU and memory metrics, normalized.\n\nThe GPU is a separate section because it is a separate collector on a\nseparate vendor interface: a driver that stops answering must not take the\nCPU and memory readings down with it.",
+      "properties": {
+        "at_unix_ms": {
+          "description": "When this section was sampled, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cpu_load_percent": {
+          "$ref": "#/$defs/Reading_float",
+          "description": "CPU utilization across every core, in percent (0 to 100)."
+        },
+        "cpu_temperature_c": {
+          "$ref": "#/$defs/Reading_float",
+          "description": "CPU package temperature, in degrees Celsius."
+        },
+        "memory": {
+          "$ref": "#/$defs/Reading_MemoryUsage"
+        }
+      },
+      "required": [
+        "at_unix_ms",
+        "cpu_load_percent",
+        "cpu_temperature_c",
+        "memory"
+      ],
+      "type": "object"
+    },
+    "TelemetrySnapshot": {
+      "description": "One complete pass of every collector.",
+      "properties": {
+        "alerts": {
+          "items": {
+            "$ref": "#/$defs/SafetyAlert"
+          },
+          "type": "array"
+        },
+        "at_unix_ms": {
+          "description": "When the pass started, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed": {
+          "items": {
+            "$ref": "#/$defs/CollectorFailure"
+          },
+          "type": "array"
+        },
+        "gpu": {
+          "$ref": "#/$defs/GpuTelemetry"
+        },
+        "interval_ms": {
+          "description": "Interval the sampler is running at, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kraken": {
+          "$ref": "#/$defs/KrakenTelemetry"
+        },
+        "sequence": {
+          "description": "Increments once per pass, so a client can tell a repeat from a refresh.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "system": {
+          "$ref": "#/$defs/SystemTelemetry"
+        }
+      },
+      "required": [
+        "sequence",
+        "at_unix_ms",
+        "interval_ms",
+        "kraken",
+        "system",
+        "gpu",
+        "alerts",
+        "failed"
+      ],
+      "type": "object"
+    },
+    "TemperatureCurve": {
+      "additionalProperties": false,
+      "description": "Exactly one PWM value per kernel curve point.\n\nThe point count is a property of the type rather than something each caller\nrechecks. It was the latter, and the four separate checks that resulted did\nnot cover the same ground: the divergence window in the daemon indexes this\narray directly, and it stayed in bounds only because a length check in a\ndifferent crate happened to run two lines earlier. An invariant that holds\nby construction is what makes that indexing safe to read.\n\nA curve arriving from a socket frame or a config file is a list of unknown\nlength, so it enters through [`TemperatureCurve::new`] and is refused there\nwhen it does not carry the ABI's count.",
+      "properties": {
+        "points": {
+          "description": "Exactly 40 duties, 0 to 255, one per degree Celsius of liquid\ntemperature from 20 to 59. A pump curve may not go under 51\n(`MIN_PUMP_DUTY`), and no curve may decrease as the temperature rises.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 40,
+          "minItems": 40,
+          "type": "array"
+        }
+      },
+      "required": [
+        "points"
+      ],
+      "type": "object"
+    },
+    "Topic": {
+      "description": "What a subscription carries.",
+      "oneOf": [
+        {
+          "const": "telemetry",
+          "description": "A snapshot every `interval_s` ticks.",
+          "type": "string"
+        },
+        {
+          "const": "status",
+          "description": "The status once at once, then whenever it differs from the last one\npushed on this connection.",
+          "type": "string"
+        },
+        {
+          "const": "events",
+          "description": "Every event recorded after the cursor.",
+          "type": "string"
+        }
+      ]
+    },
+    "Unavailable": {
+      "description": "Why a reading has no value.\n\nEvery variant names what was attempted, so a disabled control and a blank\nreadout can both explain themselves without inventing a reason.",
+      "oneOf": [
+        {
+          "description": "The attribute or interface does not exist on this machine.",
+          "properties": {
+            "cause": {
+              "const": "absent",
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cause",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It exists but could not be read: I/O error, or permission.",
+          "properties": {
+            "cause": {
+              "const": "unreadable",
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cause",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It was read but its contents could not be interpreted.",
+          "properties": {
+            "cause": {
+              "const": "unparsable",
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cause",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The device it belongs to is not connected.",
+          "properties": {
+            "cause": {
+              "const": "no_device",
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cause",
+            "detail"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UsbEndpoint": {
+      "description": "One endpoint of a USB interface, as sysfs describes it.\n\n`direction` and `transfer` are taken from the kernel's own decoded strings\nrather than re-derived from `bmAttributes`, so the record cannot disagree\nwith what the kernel believes about the same endpoint.",
+      "properties": {
+        "address": {
+          "description": "`bEndpointAddress`.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "direction": {
+          "description": "`in` or `out`, verbatim from sysfs.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "`bInterval`, in frames or microframes depending on the bus speed.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_packet_size": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transfer": {
+          "description": "`Interrupt`, `Bulk`, `Control` or `Isoc`, verbatim from sysfs.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "address",
+        "direction",
+        "transfer",
+        "max_packet_size",
+        "interval"
+      ],
+      "type": "object"
+    },
+    "UsbIdentity": {
+      "description": "Stable identity of a probed USB device.",
+      "properties": {
+        "firmware": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "`bcdDevice`, the closest thing to a firmware revision USB exposes."
+        },
+        "id": {
+          "$ref": "#/$defs/DeviceId"
+        },
+        "manufacturer": {
+          "$ref": "#/$defs/Evidenced_string"
+        },
+        "product": {
+          "$ref": "#/$defs/Evidenced_string"
+        },
+        "serial": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "USB serial number. Redacted before any diagnostics export."
+        },
+        "sysfs_path": {
+          "description": "sysfs path the record was built from.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "manufacturer",
+        "product",
+        "serial",
+        "firmware",
+        "sysfs_path"
+      ],
+      "type": "object"
+    },
+    "UsbInterface": {
+      "description": "A USB interface of a probed device, with the driver the kernel bound to it.",
+      "properties": {
+        "class": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "driver": {
+          "$ref": "#/$defs/Evidenced_string",
+          "description": "Kernel driver bound to the interface, when any."
+        },
+        "endpoints": {
+          "description": "Endpoints the interface publishes, in address order.",
+          "items": {
+            "$ref": "#/$defs/UsbEndpoint"
+          },
+          "type": "array"
+        },
+        "number": {
+          "description": "`bInterfaceNumber`.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "protocol": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subclass": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "number",
+        "class",
+        "subclass",
+        "protocol",
+        "driver",
+        "endpoints"
+      ],
+      "type": "object"
+    },
+    "ValidationError": {
+      "description": "Why a value or profile was refused.\n\nEach variant carries the accepted range so a control can name it without\nduplicating the bounds.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "name_length",
+              "type": "string"
+            },
+            "max": {
+              "description": "Longest name accepted, in characters.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "min": {
+              "description": "Shortest name accepted, in characters.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "name_blank",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "kind": {
+              "const": "duty_out_of_range",
+              "type": "string"
+            },
+            "max": {
+              "description": "Highest duty this channel accepts, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "min": {
+              "description": "Lowest duty this channel accepts, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "value": {
+              "description": "The duty refused, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "channel",
+            "value",
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "actual": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "expected": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "curve_point_count",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "expected",
+            "actual"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "kind": {
+              "const": "curve_duty_out_of_range",
+              "type": "string"
+            },
+            "max": {
+              "description": "Highest duty this channel accepts, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "min": {
+              "description": "Lowest duty this channel accepts, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "temperature_c": {
+              "description": "Liquid temperature of the refused point, in degrees Celsius.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "value": {
+              "description": "The duty refused, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "channel",
+            "temperature_c",
+            "value",
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A lighting command the profile carries, refused for its own reason.\n\nThe reason is kept as the typed error rather than flattened into a\nsentence. `LightingError` carries the channel a rejection points at and\nthe bounds the control has to name, and a caller that receives a string\nhas to parse them back out or do without.",
+          "properties": {
+            "channel": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "lighting",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/LightingError"
+            }
+          },
+          "required": [
+            "kind",
+            "channel",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The panel preset the profile carries, refused for its own reason.\n\nTyped for the same reason: [`DisplayError::field`] is what lets the\neditor put the message on the field the operator was typing in, and it\nis the first thing a `to_string` loses.",
+          "properties": {
+            "kind": {
+              "const": "display",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/DisplayError"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "kind": {
+              "const": "curve_not_monotonic",
+              "type": "string"
+            },
+            "previous": {
+              "description": "Duty of the point before, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "previous_temperature_c": {
+              "description": "Liquid temperature of the point before, in degrees Celsius.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "temperature_c": {
+              "description": "Liquid temperature of the point that decreased, in degrees Celsius.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "value": {
+              "description": "Duty of the point that decreased, 0 to 255.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "channel",
+            "previous",
+            "previous_temperature_c",
+            "value",
+            "temperature_c"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WriteDomain": {
+      "description": "A write domain a revision belongs to.",
+      "oneOf": [
+        {
+          "enum": [
+            "cooling",
+            "display"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "lighting",
+          "description": "One lighting channel. Each has its own revision.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Every frame korid and its clients exchange over the Unix socket: newline-delimited JSON, one object per line, at most 262144 bytes per frame. A request carries a `request` tag, a reply a `response` tag and a pushed frame a `push` tag. A refusal is a `response` of `error` whose body is an `IpcError`. See docs/protocol.md.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Request"
+    },
+    {
+      "$ref": "#/$defs/Response"
+    },
+    {
+      "$ref": "#/$defs/Push"
+    }
+  ],
+  "title": "Kori protocol 10",
+  "x-protocol-version": 10,
+  "x-regenerate": "cargo run --quiet -p kori-core --features schema --example protocol_schema > docs/protocol.schema.json"
+}

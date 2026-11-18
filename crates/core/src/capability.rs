@@ -21,6 +21,8 @@ pub const CAPABILITY_SCHEMA_VERSION: u32 = 3;
 
 /// A value that is either observed with its evidence, or explicitly unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "Evidenced_{T}"))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Evidenced<T> {
     /// The value was read from `source`.
@@ -70,6 +72,7 @@ impl<T> Evidenced<T> {
 /// variant it requires and reads its [`CapabilityState`] before enabling a
 /// control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityId {
     /// Coolant temperature in millidegrees Celsius.
@@ -117,6 +120,7 @@ impl CapabilityId {
 
 /// How far a capability may be exercised right now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CapabilityState {
     /// Readable, and writable only when `writable` is true.
@@ -159,6 +163,7 @@ impl CapabilityState {
 
 /// One capability with its resolved state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Capability {
     pub id: CapabilityId,
     pub state: CapabilityState,
@@ -166,6 +171,7 @@ pub struct Capability {
 
 /// A USB interface of a probed device, with the driver the kernel bound to it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UsbInterface {
     /// `bInterfaceNumber`.
     pub number: u8,
@@ -184,6 +190,7 @@ pub struct UsbInterface {
 /// rather than re-derived from `bmAttributes`, so the record cannot disagree
 /// with what the kernel believes about the same endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UsbEndpoint {
     /// `bEndpointAddress`.
     pub address: u8,
@@ -198,6 +205,7 @@ pub struct UsbEndpoint {
 
 /// Stable identity of a probed USB device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UsbIdentity {
     pub id: DeviceId,
     pub manufacturer: Evidenced<String>,
@@ -212,6 +220,7 @@ pub struct UsbIdentity {
 
 /// One `hwmon` attribute the probe resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HwmonAttribute {
     /// Attribute file name, for example `temp1_input`.
     pub name: String,
@@ -224,6 +233,7 @@ pub struct HwmonAttribute {
 
 /// The `hwmon` surface of a device bound to a kernel driver.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HwmonCapabilities {
     /// Driver name, for example `kraken2023`.
     pub driver: String,
@@ -241,6 +251,7 @@ impl HwmonCapabilities {
 
 /// The onboard curve surface of one PWM channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CurveChannel {
     /// `1` for `temp1_auto_point*`.
     pub temp_index: u8,
@@ -256,6 +267,7 @@ pub struct CurveChannel {
 /// so, and the capability state that reads it stays unvalidated rather than
 /// falling back to a plausible topology.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RgbTopology {
     /// `hidraw` node the transport would use.
     pub node: Evidenced<String>,
@@ -309,6 +321,7 @@ impl RgbTopology {
 
 /// One addressable lighting channel and what is plugged into it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RgbChannel {
     /// One-based index, matching the label printed on the controller.
     pub index: u8,
@@ -324,6 +337,7 @@ pub struct RgbChannel {
 
 /// One accessory the controller detected on a channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RgbAccessory {
     /// Identifier byte the controller returned.
     pub id: u8,
@@ -344,6 +358,7 @@ pub struct RgbAccessory {
 /// the capability gate turns on a validated firmware, and a firmware becomes
 /// validated only through a write probe an operator watched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LcdTopology {
     /// `hidraw` node the display commands travel over.
     pub hid_node: Evidenced<String>,
@@ -402,6 +417,7 @@ impl LcdTopology {
 /// not visible. The renderer needs to know which, so nothing meaningful is laid
 /// out where the glass ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LcdPanelShape {
     Circular,
@@ -410,8 +426,11 @@ pub enum LcdPanelShape {
 
 /// Geometry and pixel format one frame must match exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LcdPanel {
+    /// Framebuffer width, in pixels.
     pub width: u16,
+    /// Framebuffer height, in pixels.
     pub height: u16,
     pub shape: LcdPanelShape,
     /// Human-readable pixel format, for example `RGB565 big-endian`.
@@ -426,7 +445,9 @@ pub struct LcdPanel {
 
 /// What the panel says it is currently set to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LcdDisplaySettings {
+    /// Panel brightness, in percent (0 to 100).
     pub brightness_percent: u8,
     /// Orientation as the device counts it: `0` through `3`, each a quarter turn.
     pub quarter_turns: u8,
@@ -434,6 +455,7 @@ pub struct LcdDisplaySettings {
 
 /// Whether the product is allowed to talk to a discovered device at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SupportState {
     Supported,
@@ -445,6 +467,7 @@ pub enum SupportState {
 
 /// Everything the probe established about one device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DeviceRecord {
     pub support: SupportState,
     pub usb: UsbIdentity,
@@ -478,6 +501,7 @@ impl DeviceRecord {
 
 /// Context of the machine the probe ran on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProbeContext {
     pub kernel_release: Evidenced<String>,
     /// Milliseconds since the Unix epoch.
@@ -486,6 +510,7 @@ pub struct ProbeContext {
 
 /// A versioned, evidence-backed capability record for the whole machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CapabilityRecord {
     pub schema_version: u32,
     pub context: ProbeContext,
@@ -497,6 +522,7 @@ pub struct CapabilityRecord {
 
 /// A device seen during enumeration and deliberately left untouched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RejectedDevice {
     pub id: DeviceId,
     pub sysfs_path: String,

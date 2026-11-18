@@ -262,6 +262,7 @@ impl MetricSample {
 /// is what keeps the two in step: a rotation applied in two places at once
 /// would cancel or double.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Orientation {
     Deg0,
@@ -312,6 +313,7 @@ impl Orientation {
 /// the same color as its caption. A band may shade between two colors in the
 /// layouts that draw it long enough for a shade to register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReadingSlot {
     pub metric: LcdMetric,
@@ -337,6 +339,7 @@ impl ReadingSlot {
 
 /// Everything the panel needs, with no pixel and no protocol byte in it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DisplayPreset {
     pub mode: DisplayMode,
@@ -442,6 +445,7 @@ impl DisplayPreset {
 /// wraps this one and is itself tagged `error`: two `error` tags in one object
 /// is a frame neither side can decode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DisplayError {
     #[error("{field}: {source}")]
@@ -454,13 +458,30 @@ pub enum DisplayError {
     #[error("Image mode needs a file to display.")]
     ImagePathMissing,
     #[error("Image path is {bytes} bytes, above the {max_bytes} byte limit.")]
-    ImagePathTooLong { bytes: usize, max_bytes: usize },
+    ImagePathTooLong {
+        /// Length of the path given, in bytes.
+        bytes: usize,
+        /// Longest path accepted, in bytes.
+        max_bytes: usize,
+    },
     #[error("{path} could not be decoded as an image: {detail}")]
     ImageUndecodable { path: String, detail: String },
     #[error("Image is {width}x{height}, above the {max}x{max} limit.")]
-    ImageTooLarge { width: u32, height: u32, max: u32 },
+    ImageTooLarge {
+        /// Width of the picture, in pixels.
+        width: u32,
+        /// Height of the picture, in pixels.
+        height: u32,
+        /// Longest side accepted, in pixels.
+        max: u32,
+    },
     #[error("Image carries {pixels} pixels, above the {max} this product decodes.")]
-    ImageTooManyPixels { pixels: u64, max: u64 },
+    ImageTooManyPixels {
+        /// Pixels the picture carries.
+        pixels: u64,
+        /// Most pixels decoded.
+        max: u64,
+    },
     #[error("The animation has more than {max} frames, which is more than this panel holds.")]
     AnimationTooLong { max: usize },
     #[error("The panel geometry is not known, so no frame can be laid out.")]

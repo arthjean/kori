@@ -41,6 +41,7 @@ pub const SAMPLE_INTERVAL_MS: u64 = 1_000;
 /// Every variant names what was attempted, so a disabled control and a blank
 /// readout can both explain themselves without inventing a reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "cause", rename_all = "snake_case")]
 pub enum Unavailable {
     /// The attribute or interface does not exist on this machine.
@@ -96,6 +97,8 @@ impl std::fmt::Display for Unavailable {
 
 /// One sampled metric.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "Reading_{T}"))]
 #[serde(tag = "reading", rename_all = "snake_case")]
 pub enum Reading<T> {
     Valid { value: T },
@@ -177,6 +180,7 @@ impl Reading<f32> {
 /// firmware failsafe, not "off": the kernel documents it as running the channel
 /// at 100%.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PwmMode {
     /// `0`: the channel runs at 100%.
@@ -216,11 +220,12 @@ impl PwmMode {
 
 /// Everything one cooling channel reports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChannelTelemetry {
     pub channel: Channel,
-    /// Tachometer reading.
+    /// Tachometer reading, in RPM.
     pub rpm: Reading<u32>,
-    /// Current duty, 0-255 as the kernel reports it.
+    /// Current duty, 0 to 255 as the kernel reports it (255 is 100%).
     pub duty: Reading<u8>,
     pub mode: Reading<PwmMode>,
 }
@@ -248,10 +253,13 @@ impl ChannelTelemetry {
 /// snapshot's. The collectors run independently, so one that wedges must be
 /// visible as one aging section next to sections that are still current.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct KrakenTelemetry {
+    /// When this section was sampled, in milliseconds since the Unix epoch.
     pub at_unix_ms: u64,
     /// False when no supported Kraken is bound to a `hwmon` instance.
     pub present: bool,
+    /// Coolant temperature, in degrees Celsius.
     pub liquid_temperature_c: Reading<f32>,
     pub pump: ChannelTelemetry,
     pub fan: ChannelTelemetry,
@@ -279,8 +287,11 @@ impl KrakenTelemetry {
 
 /// Memory occupancy in bytes, so the client picks the unit it displays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MemoryUsage {
+    /// Memory in use, in bytes.
     pub used_bytes: u64,
+    /// Memory installed, in bytes.
     pub total_bytes: u64,
 }
 
@@ -300,12 +311,16 @@ impl MemoryUsage {
 
 /// The GPU the collector could reach, and what it reported.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GpuTelemetry {
+    /// When this section was sampled, in milliseconds since the Unix epoch.
     pub at_unix_ms: u64,
     /// Interface the values came from, for example `NVML`.
     pub source: String,
     pub name: Reading<String>,
+    /// GPU utilization, in percent (0 to 100).
     pub load_percent: Reading<f32>,
+    /// GPU core temperature, in degrees Celsius.
     pub temperature_c: Reading<f32>,
 }
 
@@ -331,9 +346,13 @@ impl GpuTelemetry {
 /// separate vendor interface: a driver that stops answering must not take the
 /// CPU and memory readings down with it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SystemTelemetry {
+    /// When this section was sampled, in milliseconds since the Unix epoch.
     pub at_unix_ms: u64,
+    /// CPU utilization across every core, in percent (0 to 100).
     pub cpu_load_percent: Reading<f32>,
+    /// CPU package temperature, in degrees Celsius.
     pub cpu_temperature_c: Reading<f32>,
     pub memory: Reading<MemoryUsage>,
 }
@@ -354,6 +373,7 @@ impl SystemTelemetry {
 /// The daemon keeps running and reports the failure instead of losing the
 /// whole snapshot to one bad sensor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CollectorFailure {
     pub collector: Collector,
     pub detail: String,
@@ -363,6 +383,7 @@ pub struct CollectorFailure {
 /// collector, and the order the variants are declared in is the order those
 /// states are reported in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Collector {
     Kraken,
@@ -384,12 +405,13 @@ impl Collector {
 
 /// One complete pass of every collector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TelemetrySnapshot {
     /// Increments once per pass, so a client can tell a repeat from a refresh.
     pub sequence: u64,
     /// When the pass started, in milliseconds since the Unix epoch.
     pub at_unix_ms: u64,
-    /// Interval the sampler is running at.
+    /// Interval the sampler is running at, in milliseconds.
     pub interval_ms: u64,
     pub kraken: KrakenTelemetry,
     pub system: SystemTelemetry,

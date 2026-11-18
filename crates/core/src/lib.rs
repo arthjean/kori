@@ -59,6 +59,7 @@ macro_rules! wire_enum {
             serde::Serialize,
             serde::Deserialize,
         )]
+        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
         $vis enum $name {
             $(
                 $(#[$variant_meta])*
@@ -107,6 +108,8 @@ pub mod history;
 pub mod ipc;
 pub mod lighting;
 pub mod profile;
+#[cfg(feature = "schema")]
+pub mod schema;
 pub mod telemetry;
 
 /// The product's own name.
@@ -122,6 +125,7 @@ pub const PRODUCT_NAME: &str = "Kori";
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DeviceId {
     pub vendor: u16,
     pub product: u16,

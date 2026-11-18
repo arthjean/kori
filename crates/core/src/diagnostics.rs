@@ -45,6 +45,7 @@ pub const REDACTION_PLACEHOLDER: &str = "[redacted]";
 const MIN_SECRET_LEN: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Info,
@@ -54,6 +55,7 @@ pub enum Severity {
 
 /// A state transition or typed failure worth keeping.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
     DaemonStarted {
@@ -181,9 +183,9 @@ pub enum EventKind {
         /// it. An integer because this event is compared and hashed, and
         /// because it is the unit the attribute already carries.
         liquid_temperature_mc: i32,
-        /// Duty the committed curve commands at that temperature.
+        /// Duty the committed curve commands at that temperature, 0 to 255.
         expected: u8,
-        /// Duty the device reports it is running.
+        /// Duty the device reports it is running, 0 to 255.
         reported: u8,
     },
     /// A committed command reached the hardware but could not be written down.
@@ -254,6 +256,7 @@ impl EventKind {
 
 /// One timestamped entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DiagnosticEvent {
     /// 1 for the first event a daemon records, then one more per event.
     ///
@@ -261,6 +264,7 @@ pub struct DiagnosticEvent {
     /// gap between the sequence number a client last saw and the oldest one
     /// still held is exactly the number of events it missed.
     pub seq: u64,
+    /// When the event was recorded, in milliseconds since the Unix epoch.
     pub at_unix_ms: u64,
     pub severity: Severity,
     #[serde(flatten)]
@@ -350,6 +354,7 @@ pub struct DiagnosticsLog {
 
 /// One page of the event log, as the `events` request answers it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EventPage {
     /// Sequence number of the oldest event still held, 0 when none is.
     pub oldest_seq: u64,
@@ -521,8 +526,10 @@ impl DiagnosticsLog {
 /// Every field is built from values this crate owns. Nothing walks the home
 /// directory, reads the environment or touches the network.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DiagnosticsExport {
     pub schema_version: u32,
+    /// When the export was produced, in milliseconds since the Unix epoch.
     pub generated_at_unix_ms: u64,
     pub daemon_version: String,
     pub capabilities: Option<CapabilityRecord>,

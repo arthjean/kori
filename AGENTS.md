@@ -195,6 +195,11 @@ the glass rather than asserted to. Neither extracts pixels from the other.
   a signed repository are not part of it: `docs/releasing.md`
 - Why each schema and protocol version was bumped, and which deprecated field
   is still waiting on which condition: `docs/schema-history.md`
+- The wire protocol, every request with an example, the push frames, the error
+  codes and the limits: `docs/protocol.md`, with the machine-readable form in
+  `docs/protocol.schema.json` (generated, never edited by hand; a test names
+  the command that regenerates it)
+- How an agent should drive Kori through `korictl`: `docs/agent-guide.md`
 - Observed device capabilities: `docs/capability-record.json`
 - What each write probe sent and what the operator saw: `docs/lcd-write-probe-2.0.0.json`,
   `docs/rgb-write-probe-1.5.0-fixed-and-off.json`,

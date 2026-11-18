@@ -47,17 +47,28 @@ pub const DEFAULT_WINDOW_S: u32 = SECOND_TIER_WINDOW_S;
 
 /// Every series the daemon records, in the order a reply lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryMetric {
+    /// CPU utilization, in percent.
     CpuLoad,
+    /// CPU package temperature, in degrees Celsius.
     CpuTemperature,
+    /// GPU utilization, in percent.
     GpuLoad,
+    /// GPU core temperature, in degrees Celsius.
     GpuTemperature,
+    /// Memory in use, in mebibytes.
     MemoryUsed,
+    /// Coolant temperature, in degrees Celsius.
     LiquidTemperature,
+    /// Pump speed, in RPM.
     PumpSpeed,
+    /// Fan speed, in RPM.
     FanSpeed,
+    /// Pump duty, in percent of full scale.
     PumpDuty,
+    /// Fan duty, in percent of full scale.
     FanDuty,
 }
 
@@ -291,6 +302,7 @@ impl HistoryPlan {
 
 /// Which limit a history request crossed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryLimit {
     /// `metrics` was given and empty.
@@ -329,9 +341,13 @@ impl HistoryRefusal {
 
 /// What a window held for one metric, computed by the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Summary {
+    /// Smallest reading in the window, in the metric's unit (`unit`).
     pub min: f32,
+    /// Mean of the readings in the window, in the metric's unit.
     pub avg: f32,
+    /// Largest reading in the window, in the metric's unit.
     pub max: f32,
     /// The newest value in the window: the newest reading for the second
     /// tier, the newest minute's average for the minute tier.
@@ -342,7 +358,10 @@ pub struct Summary {
 
 /// One metric of a history reply.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MetricHistory {
+    /// The unit every number of this metric is in: `percent`, `celsius`,
+    /// `mebibytes` or `rpm`.
     pub unit: String,
     /// `None` when the window holds no reading at all.
     pub summary: Option<Summary>,
@@ -359,11 +378,14 @@ pub struct MetricHistory {
 
 /// The answer to a `history` request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HistoryReply {
     /// Wall-clock time of the newest slot of the tier read. It follows the
     /// clock, so after a clock step the older slots' times are approximate:
     /// a slot is one tick, not one timestamp.
+    /// In milliseconds since the Unix epoch.
     pub end_unix_ms: u64,
+    /// Seconds each point covers.
     pub step_s: u32,
     /// Points per metric.
     pub slots: u32,

@@ -39,6 +39,7 @@ pub const MIN_COMMAND_INTERVAL_MS: u64 = 50;
 
 /// A 24-bit color, as the operator typed it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Rgb {
     pub r: u8,
@@ -125,6 +126,24 @@ impl Rgb {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
 pub struct Brightness(u8);
+
+/// Written by hand: the derive would describe the `u8` it travels as, 0 to
+/// 255, and the bound that matters is the one `try_from` enforces.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for Brightness {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Brightness".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "A brightness, in percent: 0 (off) to 100.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": MAX_BRIGHTNESS,
+        })
+    }
+}
 
 impl Brightness {
     pub const FULL: Self = Self(MAX_BRIGHTNESS);
@@ -247,6 +266,7 @@ wire_enum! {
 
 /// What one channel should display.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum LightingProgram {
     /// Every LED on the channel dark.
@@ -307,6 +327,7 @@ impl LightingProgram {
 
 /// A program addressed to one channel of the controller.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LightingCommand {
     /// One-based channel index, matching the label on the controller.
@@ -319,6 +340,7 @@ pub struct LightingCommand {
 /// Each variant carries what the control needs to point at the invalid field
 /// without restating the bounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LightingError {
     #[error("Enter {expected} hexadecimal digits, for example 7C5CFF. Got {actual}.")]
@@ -326,7 +348,12 @@ pub enum LightingError {
     #[error("Only the digits 0-9 and the letters A-F are accepted, got {value}.")]
     ColorAlphabet { value: String },
     #[error("Brightness {value} is outside the accepted range 0-{max}.")]
-    BrightnessOutOfRange { value: u8, max: u8 },
+    BrightnessOutOfRange {
+        /// The brightness refused, in percent.
+        value: u8,
+        /// Highest brightness accepted, in percent.
+        max: u8,
+    },
     #[error("Channel {channel} does not exist. This controller exposes {available}.")]
     ChannelUnknown { channel: u8, available: u8 },
     #[error("{effect} accepts {min}-{max} colors, got {actual}.")]
@@ -343,7 +370,9 @@ pub enum LightingError {
     )]
     CadenceTooFast {
         channel: u8,
+        /// Shortest wait between two commands to one channel, in milliseconds.
         minimum_interval_ms: u64,
+        /// Time since the previous command, in milliseconds.
         elapsed_ms: u64,
     },
 }

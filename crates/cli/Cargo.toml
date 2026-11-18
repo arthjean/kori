@@ -25,6 +25,18 @@ serde_json.workspace = true
 [dev-dependencies]
 kori-daemon = { path = "../daemon" }
 kori-hardware-linux = { workspace = true, features = ["testing"] }
+# The schema derives, for the test that holds `docs/protocol.schema.json` to
+# the wire types. A dev-dependency, so resolver 2 keeps them out of `korictl`.
+kori-core = { workspace = true, features = ["schema"] }
+# Validates every example frame against that schema: an implementation written
+# independently of the generator, so a mistake in one is not repeated by the
+# other. Default features off, which drops the HTTP and TLS stack used only to
+# fetch remote `$ref`s. MIT itself; the crates it adds are MIT, MIT OR
+# Apache-2.0, Apache-2.0 (`unicode-general-category`), Zlib (`foldhash`) and
+# MIT-0 (`borrow-or-share`), all compatible with GPL-3.0-or-later and all
+# already allowed by `deny.toml`.
+# Rust 1.85, under the workspace's 1.90 floor.
+jsonschema = { version = "0.61", default-features = false }
 
 [lints]
 workspace = true

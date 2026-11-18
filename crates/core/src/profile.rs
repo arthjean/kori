@@ -89,6 +89,7 @@ pub const MIN_PROGRAM_INTERVAL_MS: u64 = 200;
 
 /// A controllable cooling channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
     Pump,
@@ -136,6 +137,7 @@ impl std::fmt::Display for Channel {
 
 /// What a profile asks the hardware to do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum CoolingProgram {
     /// Leave the device on its own firmware program.
@@ -144,10 +146,19 @@ pub enum CoolingProgram {
     /// failsafe unconditionally.
     Onboard,
     /// A constant duty per channel.
-    Fixed { pump: u8, fan: u8 },
+    Fixed {
+        /// Pump duty, 0 to 255. The daemon refuses anything under 51
+        /// (`MIN_PUMP_DUTY`, 20%), because 0 stops the pump.
+        #[cfg_attr(feature = "schema", schemars(range(min = MIN_PUMP_DUTY)))]
+        pump: u8,
+        /// Fan duty, 0 to 255.
+        fan: u8,
+    },
     /// A liquid-temperature curve per channel.
     Curve {
+        /// Pump curve: every point a duty from 51 (`MIN_PUMP_DUTY`) to 255.
         pump: TemperatureCurve,
+        /// Fan curve: every point a duty from 0 to 255.
         fan: TemperatureCurve,
     },
 }
@@ -169,6 +180,7 @@ impl CoolingProgram {
 /// from a version this build cannot interpret, which is a recovery case rather
 /// than something to silently ignore.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub name: String,
@@ -218,17 +230,26 @@ impl Profile {
 /// Each variant carries the accepted range so a control can name it without
 /// duplicating the bounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ValidationError {
     #[error("Profile name must be {min}-{max} characters.")]
-    NameLength { min: usize, max: usize },
+    NameLength {
+        /// Shortest name accepted, in characters.
+        min: usize,
+        /// Longest name accepted, in characters.
+        max: usize,
+    },
     #[error("Profile name must not be blank or padded with whitespace.")]
     NameBlank,
     #[error("{channel} duty {value} is outside the accepted range {min}-{max}.")]
     DutyOutOfRange {
         channel: Channel,
+        /// The duty refused, 0 to 255.
         value: u8,
+        /// Lowest duty this channel accepts, 0 to 255.
         min: u8,
+        /// Highest duty this channel accepts, 0 to 255.
         max: u8,
     },
     #[error("A curve must contain exactly {expected} points, got {actual}.")]
@@ -238,9 +259,13 @@ pub enum ValidationError {
     )]
     CurveDutyOutOfRange {
         channel: Channel,
+        /// Liquid temperature of the refused point, in degrees Celsius.
         temperature_c: u8,
+        /// The duty refused, 0 to 255.
         value: u8,
+        /// Lowest duty this channel accepts, 0 to 255.
         min: u8,
+        /// Highest duty this channel accepts, 0 to 255.
         max: u8,
     },
     /// A lighting command the profile carries, refused for its own reason.
@@ -270,9 +295,13 @@ pub enum ValidationError {
     )]
     CurveNotMonotonic {
         channel: Channel,
+        /// Duty of the point before, 0 to 255.
         previous: u8,
+        /// Liquid temperature of the point before, in degrees Celsius.
         previous_temperature_c: u8,
+        /// Duty of the point that decreased, 0 to 255.
         value: u8,
+        /// Liquid temperature of the point that decreased, in degrees Celsius.
         temperature_c: u8,
     },
 }
@@ -409,6 +438,7 @@ pub fn validate_profile(profile: &Profile) -> Result<(), ValidationError> {
 
 /// A capability a profile needs that the device cannot provide.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Incompatibility {
     pub capability: CapabilityId,
     pub reason: String,

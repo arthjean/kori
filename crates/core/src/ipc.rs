@@ -42,6 +42,7 @@ pub const PROTOCOL_VERSION: u32 = 10;
 
 /// A request from the GPUI client to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 // `deny_unknown_fields` is not supported on internally tagged enums, so strict
 // field checking lives on the payload structs (`Profile`, `TemperatureCurve`).
 #[serde(tag = "request", rename_all = "snake_case")]
@@ -54,6 +55,8 @@ pub enum Request {
     /// and the user a write is attributed to come from the kernel, and the name
     /// only makes the attribution readable.
     Hello {
+        /// The protocol this client speaks. Any other than the daemon's own
+        /// is refused with `unsupported_protocol`.
         protocol_version: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client: Option<String>,
@@ -82,6 +85,7 @@ pub enum Request {
     /// [`IpcError::Conflict`] unless the cooling revision is still that one.
     ApplyProgram {
         program: CoolingProgram,
+        /// Refuse with `conflict` unless the domain is still at this revision.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expect_revision: Option<u64>,
     },
@@ -94,6 +98,7 @@ pub enum Request {
     /// `expect_revision` is the revision of the channel the command names.
     ApplyLighting {
         command: LightingCommand,
+        /// Refuse with `conflict` unless the domain is still at this revision.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expect_revision: Option<u64>,
     },
@@ -104,6 +109,7 @@ pub enum Request {
     /// panel keeps updating after the window closes.
     ApplyDisplay {
         preset: DisplayPreset,
+        /// Refuse with `conflict` unless the domain is still at this revision.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expect_revision: Option<u64>,
     },
@@ -116,8 +122,10 @@ pub enum Request {
     /// [`crate::diagnostics::EVENTS_DEFAULT_LIMIT`] and may not exceed
     /// [`crate::diagnostics::EVENTS_MAX_LIMIT`].
     Events {
+        /// Only the events recorded after this sequence number, oldest first.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_seq: Option<u64>,
+        /// Most events in the page: default 100, at most 512.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u32>,
     },
@@ -129,8 +137,11 @@ pub enum Request {
     History {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metrics: Option<Vec<crate::history::HistoryMetric>>,
+        /// How far back, in seconds: default 900, at most 86400.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window_s: Option<u32>,
+        /// Seconds each point covers: 1 to 59 within the second tier, a
+        /// whole number of minutes beyond.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         step_s: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,8 +156,10 @@ pub enum Request {
     /// clock. With `after_seq`, the events after it are pushed first.
     Subscribe {
         topics: Vec<Topic>,
+        /// Seconds between two telemetry pushes, 1 to 60. Default 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         interval_s: Option<u32>,
+        /// Push the events recorded after this sequence number first.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_seq: Option<u64>,
     },
@@ -154,6 +167,7 @@ pub enum Request {
 
 /// What a subscription carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Topic {
     /// A snapshot every `interval_s` ticks.
@@ -185,6 +199,7 @@ pub const SUBSCRIBE_INTERVAL_S: std::ops::RangeInclusive<u32> = 1..=60;
 /// A third tag beside `request` and `response`, so a reader can never take a
 /// push for the answer to something it asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "push", rename_all = "snake_case")]
 pub enum Push {
     Telemetry(Box<TelemetrySnapshot>),
@@ -193,6 +208,7 @@ pub enum Push {
     /// Nothing else was written for [`HEARTBEAT_INTERVAL`]. A subscriber that
     /// sees neither this nor anything else for longer knows the daemon is gone.
     Heartbeat {
+        /// When the heartbeat was sent, in milliseconds since the Unix epoch.
         at_unix_ms: u64,
     },
     /// Events this subscriber will never see: they left the ring before it
@@ -254,9 +270,11 @@ impl Request {
 /// equality that silently compared them would invite exactly the wrong kind of
 /// assertion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "response", rename_all = "snake_case")]
 pub enum Response {
     Hello {
+        /// The protocol the daemon speaks.
         protocol_version: u32,
         daemon_version: String,
         /// This connection's number, unique for the life of the daemon. It is
@@ -286,6 +304,7 @@ pub enum Response {
     History(Box<crate::history::HistoryReply>),
     Subscribed {
         topics: Vec<Topic>,
+        /// Seconds between two telemetry pushes.
         interval_s: u32,
     },
     Error(IpcError),
@@ -329,6 +348,7 @@ impl Response {
 /// `Confirmed` therefore means the controller accepted the report, and nothing
 /// stronger is claimed anywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LightingOutcome {
     pub channel: u8,
     pub program: LightingProgram,
@@ -346,6 +366,7 @@ pub struct LightingOutcome {
 /// preset it committed is the only evidence, exactly as for lighting.
 /// `Confirmed` means the transfer completed, and nothing stronger.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DisplayOutcome {
     pub preset: DisplayPreset,
     pub hardware: HardwareState,
@@ -369,6 +390,7 @@ pub struct DisplayOutcome {
 
 /// What the panel is currently showing, as far as the daemon knows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DisplayState {
     /// Geometry a frame must match, when the panel answered at all.
     pub panel: Option<LcdPanel>,
@@ -400,6 +422,7 @@ pub struct DisplayState {
     /// Transfers that failed since the daemon started.
     pub failed_transfers: u64,
     /// When the panel last took a frame, if it ever did.
+    /// In milliseconds since the Unix epoch.
     pub last_frame_at_unix_ms: Option<u64>,
     /// When the animation the panel is playing started, while one plays.
     ///
@@ -409,11 +432,13 @@ pub struct DisplayState {
     /// delays. A window that stopped its preview while hidden resumes it there
     /// instead of at the first frame. `None` for a still picture and for every
     /// other mode.
+    /// In milliseconds since the Unix epoch.
     pub animation_started_at_unix_ms: Option<u64>,
 }
 
 /// What one lighting channel is currently showing, as far as the daemon knows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChannelState {
     pub channel: u8,
     /// Accessory names the controller reported, in slot order.
@@ -426,6 +451,7 @@ pub struct ChannelState {
 
 /// What actually happened to the hardware when a profile was activated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ActivationOutcome {
     pub name: String,
     pub hardware: HardwareState,
@@ -435,6 +461,7 @@ pub struct ActivationOutcome {
 
 /// The result of one cooling write, with the evidence behind it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ApplyOutcome {
     pub hardware: HardwareState,
     /// Number of kernel attributes actually written.
@@ -469,9 +496,11 @@ impl ApplyOutcome {
 /// Every field is optional because a readback the kernel does not provide is
 /// recorded as missing rather than assumed to match what was written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChannelReadback {
     pub channel: Channel,
     pub mode: Option<PwmMode>,
+    /// Duty the kernel reports after the write, 0 to 255.
     pub duty: Option<u8>,
     /// Curve points that read back identical to what was written.
     pub curve_points_confirmed: Option<u16>,
@@ -497,6 +526,7 @@ impl ChannelReadback {
 
 /// How much of the hardware state the daemon can vouch for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HardwareState {
     /// The device is running its own firmware program and nothing was written.
@@ -546,6 +576,7 @@ pub fn validate_client_name(name: &str) -> Result<(), String> {
 /// connection was accepted. The client name is whatever that connection said
 /// in its handshake, so it labels the write rather than proving who made it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "origin", rename_all = "snake_case")]
 pub enum Attribution {
     Client {
@@ -567,6 +598,7 @@ pub enum Attribution {
 /// `expect_revision: n` is refused if anything wrote in between, rather than
 /// silently overwriting it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Revision {
     pub revision: u64,
     pub changed_by: Attribution,
@@ -584,6 +616,7 @@ impl Revision {
 
 /// A write domain a revision belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum WriteDomain {
     Cooling,
@@ -594,6 +627,7 @@ pub enum WriteDomain {
 
 /// The thermal program, as `status` reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CoolingState {
     /// The program the daemon last committed, when it committed one.
     ///
@@ -609,17 +643,20 @@ pub struct CoolingState {
 
 /// One open connection, as `status` lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ConnectedClient {
     pub connection: u64,
     /// The name the connection gave itself, when it gave one.
     pub client: Option<String>,
     /// From the kernel, not from the client.
     pub pid: i32,
+    /// When the connection was accepted, in milliseconds since the Unix epoch.
     pub connected_at_unix_ms: u64,
 }
 
 /// Whether the daemon may write at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AccessMode {
     ReadWrite,
@@ -637,6 +674,7 @@ impl AccessMode {
 
 /// Another process or a permission problem preventing ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OwnershipConflict {
     pub device: Option<DeviceId>,
     /// Path or resource the conflict was observed on.
@@ -646,6 +684,7 @@ pub struct OwnershipConflict {
 
 /// Per-device state the client renders.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DeviceStatus {
     pub id: DeviceId,
     pub present: bool,
@@ -658,6 +697,7 @@ pub struct DeviceStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BlockedCapability {
     pub capability: CapabilityId,
     pub reason: String,
@@ -665,6 +705,7 @@ pub struct BlockedCapability {
 
 /// How the on-disk configuration was resolved at startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ConfigState {
     /// No configuration existed; built-in defaults are active.
@@ -699,12 +740,14 @@ impl ConfigState {
 
 /// Everything the client needs to decide what to enable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DaemonStatus {
     pub daemon_version: String,
     pub protocol_version: u32,
     /// When this daemon started. Revisions, connection numbers, event
     /// sequence numbers and the telemetry history all restart with it, so a
     /// client that sees this change knows every number it held is void.
+    /// In milliseconds since the Unix epoch.
     pub started_at_unix_ms: u64,
     /// Every open connection, the asking one included.
     pub clients: Vec<ConnectedClient>,
@@ -724,6 +767,7 @@ pub struct DaemonStatus {
 
 /// Every way a request can be refused, with enough detail to render it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "error", rename_all = "snake_case")]
 pub enum IpcError {
     #[error("Client protocol {requested} is not supported. This daemon speaks {supported}.")]
@@ -731,7 +775,10 @@ pub enum IpcError {
     #[error("Request could not be parsed: {detail}")]
     Malformed { detail: String },
     #[error("Request exceeds the {max_bytes} byte frame limit.")]
-    FrameTooLarge { max_bytes: usize },
+    FrameTooLarge {
+        /// The frame ceiling, in bytes.
+        max_bytes: usize,
+    },
     #[error("Request rejected before the protocol handshake completed.")]
     HandshakeRequired,
     #[error("Local peer rejected: {reason}")]

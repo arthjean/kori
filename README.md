@@ -59,7 +59,7 @@ Log out and back in. Group membership is read when the session starts, so a sess
 systemctl --user enable --now korid.service
 ```
 
-`systemctl --user status korid` reports the socket it bound and how many attributes it found writable on each device. Then launch Kori from your application menu, or run `kori`. Scripts and agents drive the same daemon with `korictl`, which prints JSON (`korictl status`, `korictl set cooling '{"mode":"onboard"}'`).
+`systemctl --user status korid` reports the socket it bound and how many attributes it found writable on each device. Then launch Kori from your application menu, or run `kori`. Scripts and agents drive the same daemon with `korictl`, which prints JSON (`korictl status`, `korictl set cooling '{"mode":"onboard"}'`); `korictl describe` lists every command and [docs/agent-guide.md](docs/agent-guide.md) says how an agent should use them.
 
 [Building and running from source →](./docs/from-source.md)
 

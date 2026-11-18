@@ -39,8 +39,13 @@ pub const CURVE_NODE_COUNT: usize = 9;
 /// so the object written to a config file or a socket frame stays the
 /// `{"points": [..]}` it has always been.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct CurveWire {
+    /// Exactly 40 duties, 0 to 255, one per degree Celsius of liquid
+    /// temperature from 20 to 59. A pump curve may not go under 51
+    /// (`MIN_PUMP_DUTY`), and no curve may decrease as the temperature rises.
+    #[cfg_attr(feature = "schema", schemars(length(equal = CURVE_POINT_COUNT)))]
     points: Vec<u8>,
 }
 
@@ -57,6 +62,7 @@ struct CurveWire {
 /// length, so it enters through [`TemperatureCurve::new`] and is refused there
 /// when it does not carry the ABI's count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "CurveWire", into = "CurveWire")]
 pub struct TemperatureCurve {
     points: [u8; CURVE_POINT_COUNT],
