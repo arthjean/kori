@@ -1,0 +1,38 @@
+{
+  "prd": {
+    "file": "tasks/prd-agent-first-control.md",
+    "title": "Agent-First Control",
+    "created_at": "2026-11-18",
+    "status": "READY"
+  },
+  "epics": [
+    { "id": "EP-001", "title": "korictl, the command-line client", "status": "DONE", "priority": "P0", "stories_total": 3, "stories_done": 3 },
+    { "id": "EP-002", "title": "Protocol 10: identity, events, history and a stream", "status": "TODO", "priority": "P0", "stories_total": 5, "stories_done": 0 },
+    { "id": "EP-003", "title": "A minimal Monitoring screen and a thin window", "status": "TODO", "priority": "P0", "stories_total": 5, "stories_done": 0 },
+    { "id": "EP-004", "title": "A published protocol contract", "status": "TODO", "priority": "P1", "stories_total": 2, "stories_done": 0 },
+    { "id": "EP-005", "title": "Idle cost and budgets", "status": "TODO", "priority": "P1", "stories_total": 3, "stories_done": 0 },
+    { "id": "EP-006", "title": "Operator validation", "status": "TODO", "priority": "P1", "stories_total": 2, "stories_done": 0 }
+  ],
+  "stories": [
+    { "id": "US-001", "title": "CLI scaffold, output contract and read commands", "epic": "EP-001", "status": "DONE", "priority": "P0", "size": "L", "blocked_by": [], "started_at": "2026-11-18", "completed_at": "2026-11-18", "reviewed_at": "2026-11-18" },
+    { "id": "US-002", "title": "Write commands with protocol-shaped payloads", "epic": "EP-001", "status": "DONE", "priority": "P0", "size": "M", "blocked_by": ["US-001"], "started_at": "2026-11-18", "completed_at": "2026-11-18", "reviewed_at": "2026-11-18" },
+    { "id": "US-003", "title": "Package and release korictl", "epic": "EP-001", "status": "DONE", "priority": "P1", "size": "S", "blocked_by": ["US-001"], "started_at": "2026-11-18", "completed_at": "2026-11-18", "reviewed_at": "2026-11-18" },
+    { "id": "US-004", "title": "Client identity in hello and write attribution", "epic": "EP-002", "status": "TODO", "priority": "P0", "size": "M", "blocked_by": ["US-001"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-005", "title": "An event log that records state changes, with sequence numbers", "epic": "EP-002", "status": "TODO", "priority": "P0", "size": "M", "blocked_by": ["US-004"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-006", "title": "Telemetry history in the daemon", "epic": "EP-002", "status": "TODO", "priority": "P0", "size": "L", "blocked_by": ["US-004"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-007", "title": "A pushed stream with subscribe", "epic": "EP-002", "status": "TODO", "priority": "P0", "size": "L", "blocked_by": ["US-005"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-008", "title": "Write revisions and a conflict precondition", "epic": "EP-002", "status": "TODO", "priority": "P1", "size": "M", "blocked_by": ["US-004"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-009", "title": "Monitoring reduced to four dials and one temperature chart", "epic": "EP-003", "status": "TODO", "priority": "P0", "size": "L", "blocked_by": ["US-006"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-010", "title": "The window adopts changes made by other clients", "epic": "EP-003", "status": "TODO", "priority": "P1", "size": "M", "blocked_by": ["US-008"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-011", "title": "Remove the dead Export control from Settings", "epic": "EP-003", "status": "TODO", "priority": "P1", "size": "XS", "blocked_by": ["US-001"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-012", "title": "Repaint only when the visible screen changed", "epic": "EP-003", "status": "TODO", "priority": "P1", "size": "M", "blocked_by": ["US-009"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-013", "title": "The window consumes the stream instead of polling", "epic": "EP-003", "status": "TODO", "priority": "P2", "size": "L", "blocked_by": ["US-007", "US-012"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-014", "title": "JSON Schema generated from the wire types", "epic": "EP-004", "status": "TODO", "priority": "P1", "size": "M", "blocked_by": ["US-007", "US-008"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-015", "title": "Self-description and protocol documentation", "epic": "EP-004", "status": "TODO", "priority": "P1", "size": "S", "blocked_by": ["US-014"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-016", "title": "Deadline-based waits and named threads in the daemon", "epic": "EP-005", "status": "TODO", "priority": "P1", "size": "M", "blocked_by": [], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-017", "title": "Skip the panel render when its inputs did not change", "epic": "EP-005", "status": "TODO", "priority": "P1", "size": "S", "blocked_by": [], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-018", "title": "A budget script and the CI checks it can run", "epic": "EP-005", "status": "TODO", "priority": "P1", "size": "M", "blocked_by": ["US-003", "US-016"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-019", "title": "Validate assumption: a hidden window draws nothing", "epic": "EP-006", "status": "TODO", "priority": "P1", "size": "S", "blocked_by": ["US-013"], "started_at": null, "completed_at": null, "reviewed_at": null },
+    { "id": "US-020", "title": "Hardware and interface validation on the owned Kraken", "epic": "EP-006", "status": "TODO", "priority": "P1", "size": "M", "blocked_by": ["US-013", "US-017", "US-018"], "started_at": null, "completed_at": null, "reviewed_at": null }
+  ]
+}
