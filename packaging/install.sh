@@ -21,6 +21,7 @@ cd "$here"
 
 install -Dm0755 bin/kori "$prefix/bin/kori"
 install -Dm0755 bin/korid "$prefix/bin/korid"
+install -Dm0755 bin/korictl "$prefix/bin/korictl"
 
 install -Dm0644 share/applications/kori.desktop "$prefix/share/applications/kori.desktop"
 install -Dm0644 share/icons/hicolor/scalable/apps/kori.svg \

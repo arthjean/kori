@@ -23,6 +23,12 @@ Arch is served by `packaging/aur/PKGBUILD`, which consumes the tarball above.
 The `.deb` and the `.rpm` both come from `packaging/nfpm.yaml`, and everything
 in them comes from `dist/root`, which `packaging/stage.sh` writes.
 
+Every artifact carries the same three binaries: `kori`, `korid` and `korictl`.
+`packaging/stage.sh` refuses to stage a layout missing any of them, and
+`packaging/check-linked-libraries.sh` refuses a `korictl` whose ELF `NEEDED`
+list names a GUI, Vulkan, font or NVIDIA library, because the command line has
+to start on a machine with no display stack at all.
+
 The build runs on `ubuntu-22.04` so the binaries carry glibc 2.35, which is the
 oldest GitHub still hosts. That is the floor a user has to clear: Ubuntu 22.04,
 Debian 12, Fedora 37, and anything newer.
@@ -40,8 +46,9 @@ releases page until every package in it has been installed in a clean container:
 
 Each of them then asserts the layout, that the postinstall created the `kori`
 group, that no binary reports a missing library, that the two libraries the
-renderer opens with `dlopen` are actually in the loader cache, and that `korid`
-runs. The deb job also removes the package and checks the group survives.
+renderer opens with `dlopen` are actually in the loader cache, that `korid`
+runs, and that `korictl version` answers with no daemon present. The deb job
+also removes the package and checks the group survives.
 
 That last one is not decoration: `ldd` catches exactly the failure that made
 this build run on `ubuntu-22.04`. A binary linked on a newer host installs

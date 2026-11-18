@@ -17,15 +17,31 @@
 
 set -eu
 
-dir=${1:?usage: packaging/check-linked-libraries.sh <directory holding kori and korid>}
+dir=${1:?usage: packaging/check-linked-libraries.sh <directory holding kori, korid and korictl>}
 record=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/linked-libraries.txt
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-for binary in kori korid; do
+for binary in kori korid korictl; do
+    if [ ! -f "$dir/$binary" ]; then
+        echo "check-linked-libraries: $dir/$binary is missing" >&2
+        exit 1
+    fi
     objdump -p "$dir/$binary" | awk -v b="$binary" '$1 == "NEEDED" { print b, $2 }'
 done | sort >"$work/actual"
+
+# The command line has to start on a machine with no display stack at all: a
+# server, a container, an agent's sandbox. A GUI, Vulkan, font or NVIDIA library
+# in its NEEDED list means a window dependency leaked into it through the crate
+# graph, and recording it would only make the leak official.
+leaked=$(awk '$1 == "korictl" { print $2 }' "$work/actual" |
+    grep -E -i 'xcb|xkbcommon|x11|wayland|vulkan|egl|libgl|fontconfig|freetype|harfbuzz|nvidia|cuda' || true)
+if [ -n "$leaked" ]; then
+    echo "check-linked-libraries: korictl links display or GPU libraries:" >&2
+    echo "$leaked" >&2
+    exit 1
+fi
 
 grep -v -e '^#' -e '^[[:space:]]*$' "$record" | sort >"$work/recorded"
 

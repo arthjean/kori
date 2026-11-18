@@ -25,3 +25,8 @@ kori libxkbcommon.so.0
 korid libc.so.6
 korid libgcc_s.so.1
 korid libm.so.6
+
+# Recorded on 2026-11-18. The client links kori-core and nothing that draws,
+# and check-linked-libraries.sh fails the release if that stops being true.
+korictl libc.so.6
+korictl libgcc_s.so.1

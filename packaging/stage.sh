@@ -43,17 +43,21 @@ if ! grep -q "^## $version " CHANGELOG.md; then
     exit 1
 fi
 
-for binary in kori korid; do
+# Every binary the packages install, named here once: a release missing one
+# would be a package whose documentation names a command that is not there.
+binaries="kori korid korictl"
+for binary in $binaries; do
     if [ ! -x "$target/$binary" ]; then
-        echo "stage: $target/$binary is missing; run cargo build --release first" >&2
+        echo "stage: $target/$binary is missing; run cargo build --release --workspace first" >&2
         exit 1
     fi
 done
 
 rm -rf "$dist"
 root=$dist/root
-install -Dm0755 "$target/kori" "$root/usr/bin/kori"
-install -Dm0755 "$target/korid" "$root/usr/bin/korid"
+for binary in $binaries; do
+    install -Dm0755 "$target/$binary" "$root/usr/bin/$binary"
+done
 install -Dm0644 packaging/udev/70-kori.rules "$root/usr/lib/udev/rules.d/70-kori.rules"
 install -Dm0644 packaging/desktop/kori.desktop "$root/usr/share/applications/kori.desktop"
 install -Dm0644 packaging/icons/kori.svg "$root/usr/share/icons/hicolor/scalable/apps/kori.svg"
@@ -81,8 +85,9 @@ fi
 # keeps the home-directory ExecStart the repository's unit has.
 name=kori-$version-x86_64-linux
 tree=$dist/tarball/$name
-install -Dm0755 "$target/kori" "$tree/bin/kori"
-install -Dm0755 "$target/korid" "$tree/bin/korid"
+for binary in $binaries; do
+    install -Dm0755 "$target/$binary" "$tree/bin/$binary"
+done
 install -Dm0644 packaging/systemd/korid.service "$tree/lib/systemd/user/korid.service"
 install -Dm0644 packaging/udev/70-kori.rules "$tree/lib/udev/rules.d/70-kori.rules"
 install -Dm0644 packaging/desktop/kori.desktop "$tree/share/applications/kori.desktop"

@@ -45,6 +45,7 @@ package() {
 
     install -Dm0755 bin/kori "$pkgdir/usr/bin/kori"
     install -Dm0755 bin/korid "$pkgdir/usr/bin/korid"
+    install -Dm0755 bin/korictl "$pkgdir/usr/bin/korictl"
 
     # The tarball's unit starts the daemon from the home directory, which is
     # where its own installer puts it. A packaged unit names /usr/bin, and

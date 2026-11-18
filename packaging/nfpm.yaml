@@ -86,6 +86,12 @@ contents:
     dst: /usr/bin/korid
     file_info:
       mode: 0755
+  # The command-line client. It links libc and libgcc_s alone, so it adds no
+  # dependency to either package.
+  - src: ./dist/root/usr/bin/korictl
+    dst: /usr/bin/korictl
+    file_info:
+      mode: 0755
 
   # The unit staged for a package install, whose ExecStart names /usr/bin/korid
   # rather than the home directory the repository's copy points at.

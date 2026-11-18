@@ -206,6 +206,7 @@ jobs:
           set -eu
           test -x /usr/bin/kori
           test -x /usr/bin/korid
+          test -x /usr/bin/korictl
           test -f /usr/lib/udev/rules.d/70-kori.rules
           test -f /usr/share/applications/kori.desktop
           test -f /usr/share/icons/hicolor/scalable/apps/kori.svg
@@ -221,7 +222,7 @@ jobs:
           set -eu
           # Every soname in the ELF headers, satisfied by what the Depends line
           # pulled in and nothing else.
-          for binary in /usr/bin/kori /usr/bin/korid; do
+          for binary in /usr/bin/kori /usr/bin/korid /usr/bin/korictl; do
             if ldd "$binary" | grep 'not found'; then
               echo "$binary is missing a library the package should have pulled in" >&2
               exit 1
@@ -235,6 +236,9 @@ jobs:
           # finds no Kraken, which is a record saying so rather than a failure.
           korid --version
           korid --capabilities >/dev/null
+          # No daemon runs in the container, and version is the one command
+          # that still answers then: it exits 0 with a null daemon_version.
+          korictl version
 
       - name: Assert removal leaves nothing behind
         env:
@@ -285,6 +289,7 @@ jobs:
           set -eu
           test -x /usr/bin/kori
           test -x /usr/bin/korid
+          test -x /usr/bin/korictl
           test -f /usr/lib/udev/rules.d/70-kori.rules
           test -f /usr/share/applications/kori.desktop
           test -f /usr/share/icons/hicolor/scalable/apps/kori.svg
@@ -296,7 +301,7 @@ jobs:
       - name: Assert the binaries resolve their libraries
         run: |
           set -eu
-          for binary in /usr/bin/kori /usr/bin/korid; do
+          for binary in /usr/bin/kori /usr/bin/korid /usr/bin/korictl; do
             if ldd "$binary" | grep 'not found'; then
               echo "$binary is missing a library the package should have pulled in" >&2
               exit 1
@@ -306,6 +311,9 @@ jobs:
           ldconfig -p | grep -q 'libfontconfig\.so\.1'
           korid --version
           korid --capabilities >/dev/null
+          # No daemon runs in the container, and version is the one command
+          # that still answers then: it exits 0 with a null daemon_version.
+          korictl version
 
   smoke-tarball:
     name: install the tarball on Arch
@@ -343,6 +351,7 @@ jobs:
           set -eu
           test -x "$HOME/.local/bin/kori"
           test -x "$HOME/.local/bin/korid"
+          test -x "$HOME/.local/bin/korictl"
           test -f "$HOME/.local/share/applications/kori.desktop"
           test -f "$HOME/.local/share/icons/hicolor/scalable/apps/kori.svg"
           # The unit is written against the prefix the run installed into, not
@@ -355,6 +364,7 @@ jobs:
           fi
           "$HOME/.local/bin/korid" --version
           "$HOME/.local/bin/korid" --capabilities >/dev/null
+          "$HOME/.local/bin/korictl" version
 
   publish:
     needs: [build, smoke-deb, smoke-rpm, smoke-tarball]

@@ -48,7 +48,7 @@
       <li>Lighting control gated on a firmware revision validated on real hardware</li>
       <li>LCD panel presets, previewed with the same renderer that feeds the glass</li>
       <li>A background daemon that owns the devices, serializes writes and detects a competing writer</li>
-      <li>Neither binary runs as root, and normal operation opens no network socket</li>
+      <li>No binary runs as root, and normal operation opens no network socket</li>
     </ul>
   </description>
 
