@@ -41,7 +41,7 @@ cooling, so the hardware rules below outrank convenience.
   the predicate a test exercises have to be the same function: two spellings of
   it is how the tests keep passing for a gate the write path stopped asking.
   `probe.rs` records what the machine exposes and decides nothing.
-- Never make either binary require root. `korid` refuses to start as
+- Never make any binary require root. `korid` refuses to start as
   root (`crates/daemon/src/main.rs`). Missing permission degrades to read-only
   with a stated reason; it never escalates.
 - Keep the safety floors enforced before the write, not at the UI: `MIN_PUMP_DUTY`
@@ -132,6 +132,8 @@ crates/lcd-renderer    one DisplayPreset to one exact framebuffer, or to the
                        frames an animated picture plays
 crates/daemon          ownership, sampling, serialized writes, Unix IPC
 crates/app             GPUI window, holds no hardware handle
+crates/cli             korictl: JSON on stdout, stable exit codes, links
+                       kori-core alone and validates no payload
 ```
 
 Do not create a crate or module before something calls it. `lcd-renderer` has

@@ -39,11 +39,30 @@ cargo build --release
 # Start the service, then the interface.
 ./target/release/korid &
 ./target/release/kori
+
+# Or drive the same service from a shell or an agent, JSON on stdout.
+./target/release/korictl status
 ```
+
+The build produces three binaries: `korid`, the daemon that owns the hardware;
+`kori`, the window; and `korictl`, the command-line client. `korictl` prints one
+JSON document per command and exits with a code that says how it went (0
+success, 1 refused by the daemon, 2 usage or payload, 3 no daemon, 4 protocol
+mismatch, 5 connection lost or timed out). Only commands that start with `set`
+or `profile` write. It checks nothing a payload says: the daemon revalidates
+every value against its safety floors, exactly as it does for the window.
+
+While developing, `scripts/dev.sh` does the last two lines for you from the
+working tree (`--release` for an optimized build). It builds all three binaries,
+stops the `korid` user service if it is running, because only one daemon can
+hold the device locks, starts the daemon from source with its output prefixed
+`[korid]`, waits for it to report its socket, then opens the window. Closing
+the window or pressing Ctrl+C stops the daemon through its orderly shutdown and
+starts the user service again.
 
 ## Hardware access
 
-Neither binary ever runs as root, so writing needs the kernel files to be
+No binary ever runs as root, so writing needs the kernel files to be
 reachable as your own user. `packaging/udev/70-kori.rules` grants exactly that,
 on the two allowlisted devices and nothing else:
 
@@ -122,7 +141,7 @@ this icon for the running window instead of a generic one, and
 
 | Variable | Role |
 |---|---|
-| `KORI_SOCKET` | Unix socket path |
+| `KORI_SOCKET` | Unix socket path, read by `korid`, `kori` and `korictl` |
 | `KORI_CONFIG_DIR` | Configuration directory |
 | `KORI_RUNTIME_DIR` | Lock and socket directory |
 | `KORI_SYSFS_ROOT` | sysfs root, for tests against a fake tree |
@@ -135,6 +154,7 @@ this icon for the running window instead of a generic one, and
 ```text
 crates/
 ├── app             GPUI, screens, native controls and the client data feed
+├── cli             korictl, the JSON command-line client
 ├── daemon          device ownership, sampling, writes and Unix IPC
 ├── core            capabilities, telemetry, profiles, IPC protocol and diagnostics
 ├── hardware-linux  sysfs, hwmon, system sensors and the single write path

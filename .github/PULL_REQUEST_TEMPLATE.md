@@ -29,7 +29,7 @@ Skip this section only if the change touches no write path and no capability.
       every client value
 - [ ] An unproven capability is reported as `Evidenced::Unknown` with a reason,
       and its control is `Disabled { reason }` rather than absent
-- [ ] Neither binary requires root, and no network socket is opened
+- [ ] No binary requires root, and no network socket is opened
 - [ ] Ran on real hardware, previous safe state restored, firmware recorded
 
 ## Interface

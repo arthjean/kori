@@ -6,6 +6,7 @@ members = [
     "crates/lcd-renderer",
     "crates/daemon",
     "crates/app",
+    "crates/cli",
 ]
 
 [workspace.package]

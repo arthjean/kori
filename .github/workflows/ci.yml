@@ -128,3 +128,11 @@ jobs:
           for script in packaging/*.sh packaging/scripts/*.sh; do
             sh -n "$script"
           done
+
+      # The development launcher stops and restarts the user service; a syntax
+      # error there leaves a contributor's daemon stopped.
+      - name: Parse the development scripts
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done

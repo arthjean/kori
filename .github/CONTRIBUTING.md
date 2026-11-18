@@ -46,7 +46,7 @@ negotiable:
   invent a default: a fabricated default is indistinguishable from a validated
   capability once it reaches a control.
 
-Neither binary may require root, and normal operation opens no network socket.
+No binary may require root, and normal operation opens no network socket.
 
 ## Style
 

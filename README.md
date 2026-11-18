@@ -59,7 +59,7 @@ Log out and back in. Group membership is read when the session starts, so a sess
 systemctl --user enable --now korid.service
 ```
 
-`systemctl --user status korid` reports the socket it bound and how many attributes it found writable on each device. Then launch Kori from your application menu, or run `kori`.
+`systemctl --user status korid` reports the socket it bound and how many attributes it found writable on each device. Then launch Kori from your application menu, or run `kori`. Scripts and agents drive the same daemon with `korictl`, which prints JSON (`korictl status`, `korictl set cooling '{"mode":"onboard"}'`).
 
 [Building and running from source →](./docs/from-source.md)
 
@@ -67,7 +67,7 @@ systemctl --user enable --now korid.service
 
 Normal operation opens zero network sockets and makes zero network requests. No account, no cloud, no telemetry, nothing to opt out of.
 
-Neither binary ever runs as root, and `korid` refuses to start as root. Write access comes from [`packaging/udev/70-kori.rules`](./packaging/udev/70-kori.rules), which grants exactly four PWM attributes and eighty curve points on the two allowlisted devices and nothing else. Every reading attribute is world-readable already and is left untouched. Without that rule the application runs read-only and says so, rather than failing silently.
+No binary ever runs as root, and `korid` refuses to start as root. Write access comes from [`packaging/udev/70-kori.rules`](./packaging/udev/70-kori.rules), which grants exactly four PWM attributes and eighty curve points on the two allowlisted devices and nothing else. Every reading attribute is world-readable already and is left untouched. Without that rule the application runs read-only and says so, rather than failing silently.
 
 Every release artifact is signed through Sigstore, over a build provenance statement naming the workflow and commit it came from. This project distributes no key and holds none:
 
