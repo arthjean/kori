@@ -347,8 +347,13 @@ fn stop_on_signal(handle: kori_daemon::server::ShutdownHandle) -> Result<(), Str
         .map_err(|error| format!("could not install the signal handler: {error}"))?;
 
     std::thread::spawn(move || {
-        if signals.forever().next().is_some() {
-            handle.stop();
+        if let Some(signal) = signals.forever().next() {
+            let name = match signal {
+                SIGTERM => "SIGTERM",
+                SIGINT => "SIGINT",
+                _ => "a termination signal",
+            };
+            handle.stop_because(format!("received {name}"));
         }
     });
     Ok(())

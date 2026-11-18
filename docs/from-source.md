@@ -52,6 +52,60 @@ mismatch, 5 connection lost or timed out). Only commands that start with `set`
 or `profile` write. It checks nothing a payload says: the daemon revalidates
 every value against its safety floors, exactly as it does for the window.
 
+### Who changed what
+
+Every connection may name itself in its handshake: the window says `kori`,
+`korictl` says `korictl` unless `--client NAME` or `KORI_CLIENT` gives another
+name. `status` lists every open connection under its number, its name and its
+process ID, and every write the daemon records carries a `by` field naming the
+connection that made it, or `{"origin":"daemon"}` for what a start restored.
+
+The name is a label the client declares for itself, nothing more. The daemon
+checks its shape (1 to 32 characters from `a-z`, `0-9`, `.`, `_` and `-`) and
+never its truth, so two clients can give the same name and a script can call
+itself `kori`. The process ID and the user come from the kernel (`SO_PEERCRED`
+on the socket), and the user is checked on every connection; that check and the
+safety floors the daemon applies to every value are what protect the hardware,
+not the name.
+
+### What the daemon remembers, and how to follow it
+
+`korictl events [--after SEQ] [--limit N]` reads the event log. Every event
+carries a `seq` that starts at 1 when the daemon starts and grows by one, so a
+reader passes the last `seq` it saw as `--after` and gets what came next;
+`missed` counts the events the 512-slot ring dropped before they were asked
+for. The log records state changes, not steady states: a write, a refusal, a
+device or collector that changed, a panel stream that stopped or started again.
+The frames a healthy stream sends are counted in `status.display` instead
+(`frames_sent`, `failed_transfers`, `last_frame_at_unix_ms`). A connection that
+only reads, and is refused nothing, leaves no event.
+
+`korictl history [--metric M]... [--window DURATION] [--step DURATION]
+[--points]` answers "what happened over the last hour" in one call: per metric
+a `min`, `avg`, `max`, `last` and sample count, and with `--points` the series
+itself, oldest first. The daemon keeps two tiers in memory, 900 one-second
+slots and 1,440 one-minute slots, for ten metrics (`cpu_load`,
+`cpu_temperature`, `gpu_load`, `gpu_temperature`, `memory_used`,
+`liquid_temperature`, `pump_speed`, `fan_speed`, `pump_duty`, `fan_duty`). A
+step under a minute reads the first and covers at most 15 minutes; a step in
+whole minutes reads the second and covers at most 24 hours. **The history never
+reaches the disk and restarts empty with the daemon.** A longer record is the
+client's to keep: `korictl watch --topic telemetry >> telemetry.ndjson`.
+
+`korictl watch [--topic T]... [--interval DURATION] [--count N] [--for
+DURATION]` subscribes and prints one push per line, flushed as it arrives:
+`telemetry` every interval, `status` once and then whenever it changes,
+`event` as each is recorded, a `heartbeat` after ten quiet seconds. It exits 0
+at its count or duration, or when its reader closes the pipe, and 5 after
+printing `closing` when the daemon stops. Without `--count` or `--for` it runs
+until stopped, like `tail -f`; an agent with a command timeout should pass one.
+
+Each write domain carries a `revision` in `status` (cooling, each lighting
+channel, the panel) with the `changed_by` of the last write. `korictl set ...
+--if-revision N` refuses with `conflict` instead of overwriting when anything
+wrote since revision N, and writes nothing. Revisions restart at 1 with the
+daemon, which `status.started_at_unix_ms` makes visible.
+
 While developing, `scripts/dev.sh` does the last two lines for you from the
 working tree (`--release` for an optimized build). It builds all three binaries,
 stops the `korid` user service if it is running, because only one daemon can
@@ -142,6 +196,7 @@ this icon for the running window instead of a generic one, and
 | Variable | Role |
 |---|---|
 | `KORI_SOCKET` | Unix socket path, read by `korid`, `kori` and `korictl` |
+| `KORI_CLIENT` | Name `korictl` gives itself in the handshake (default `korictl`; `--client` overrides it) |
 | `KORI_CONFIG_DIR` | Configuration directory |
 | `KORI_RUNTIME_DIR` | Lock and socket directory |
 | `KORI_SYSFS_ROOT` | sysfs root, for tests against a fake tree |

@@ -17,9 +17,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kori_core::display::FRAME_INTERVAL_MS;
-use kori_core::ipc::{IpcError, Request, Response, read_frame, write_frame};
+use kori_core::ipc::{HEARTBEAT_INTERVAL, IpcError, Request, Response, read_frame, write_frame};
 
 use crate::state::Daemon;
+use crate::stream::{self, Hub};
+
+/// Longest the shutdown waits for subscribers to take their `closing` push.
+///
+/// A little past the write timeout, so a subscriber that stopped reading has
+/// been dropped by its own thread before the process goes.
+const DRAIN_LIMIT: Duration = Duration::from_millis(2_500);
 
 /// Longest the display ticker sleeps between two looks at the clock.
 ///
@@ -41,7 +48,13 @@ pub struct Server {
     listener: UnixListener,
     daemon: Arc<Mutex<Daemon>>,
     shutdown: Arc<AtomicBool>,
+    /// Why the shutdown was asked for, as `daemon_stopping` records it.
+    stop_reason: Arc<Mutex<Option<String>>>,
     frame_interval: Duration,
+    /// Wakes subscribers. The ticker and the request handlers notify it after
+    /// releasing the state lock.
+    hub: Arc<Hub>,
+    heartbeat: Duration,
 }
 
 /// Bind the socket with owner-only permissions.
@@ -71,8 +84,20 @@ impl Server {
             listener,
             daemon: Arc::new(Mutex::new(daemon)),
             shutdown: Arc::new(AtomicBool::new(false)),
+            stop_reason: Arc::new(Mutex::new(None)),
             frame_interval: Duration::from_millis(FRAME_INTERVAL_MS),
+            hub: Arc::new(Hub::new()),
+            heartbeat: HEARTBEAT_INTERVAL,
         }
+    }
+
+    /// Send a heartbeat after `interval` of silence instead of ten seconds.
+    ///
+    /// Only the cadence changes, so a test sees a heartbeat without waiting
+    /// for the shipped one.
+    pub fn with_heartbeat(mut self, interval: Duration) -> Self {
+        self.heartbeat = interval;
+        self
     }
 
     /// Redraw the panel at `interval` instead of once a second.
@@ -92,6 +117,7 @@ impl Server {
     pub fn shutdown_handle(&self) -> ShutdownHandle {
         ShutdownHandle {
             flag: Arc::clone(&self.shutdown),
+            reason: Arc::clone(&self.stop_reason),
             socket: self.local_path(),
         }
     }
@@ -125,6 +151,7 @@ impl Server {
         let daemon = Arc::clone(&self.daemon);
         let shutdown = Arc::clone(&self.shutdown);
         let interval = self.frame_interval;
+        let hub = Arc::clone(&self.hub);
         std::thread::spawn(move || {
             let mut next = Instant::now() + interval;
             // Nothing is playing until a preset says so, so the loop starts on
@@ -137,6 +164,7 @@ impl Server {
                 let now = Instant::now();
 
                 let mut animation_due = None;
+                let mut ticked = false;
                 if let Ok(mut daemon) = daemon.lock() {
                     // The animation is asked first: it runs at up to a dozen
                     // frames a second against the telemetry redraw's one, so it
@@ -151,11 +179,15 @@ impl Server {
                         }
                         next += interval;
 
-                        for _ in 0..missed {
-                            daemon.drop_display_frame();
-                        }
+                        daemon.skip_ticks(missed);
                         daemon.tick(now);
+                        ticked = true;
                     }
+                }
+                // After the lock is released, and without waiting on anyone:
+                // a subscriber learns of the tick when it next looks.
+                if ticked {
+                    hub.tick();
                 }
 
                 // Sleep to whichever comes first.
@@ -178,16 +210,44 @@ impl Server {
             let Ok(stream) = stream else { continue };
 
             let daemon = Arc::clone(&self.daemon);
+            let hub = Arc::clone(&self.hub);
+            let heartbeat = self.heartbeat;
             // One thread per client. The state mutex, not the thread count,
             // is what serializes commands.
-            std::thread::spawn(move || serve(stream, daemon));
+            std::thread::spawn(move || serve(stream, daemon, hub, heartbeat));
         }
+
+        // Recorded first, while every subsystem is still up, so the event is in
+        // the log a subscriber reads on its way out rather than lost with it.
+        let reason = self
+            .stop_reason
+            .lock()
+            .ok()
+            .and_then(|mut reason| reason.take())
+            .unwrap_or_else(|| "shutdown requested".to_string());
+        note(&self.daemon, |daemon| {
+            daemon.record_stopping(reason.clone())
+        });
+        self.hub.close(reason);
 
         // The ticker holds the same lock the request handlers do, so it is
         // joined before the socket is removed: a frame half written while the
         // daemon is being torn down is exactly the state this product refuses
         // to leave the hardware in.
         let _ = ticker.join();
+
+        // Every subscriber takes its last events and its `closing` push on its
+        // own thread. They are waited for, briefly, so the push is on the wire
+        // before the process exits; one that stopped reading is dropped by its
+        // own write timeout inside this limit.
+        let deadline = Instant::now() + DRAIN_LIMIT;
+        while Instant::now() < deadline {
+            let remaining = self.daemon.lock().map_or(0, |daemon| daemon.subscribers());
+            if remaining == 0 {
+                break;
+            }
+            self.hub.wait_any(Duration::from_millis(50));
+        }
 
         // The socket goes before the last wait, so no further client can
         // connect while this is finishing.
@@ -208,12 +268,21 @@ impl Server {
 /// Stops a running [`Server`].
 pub struct ShutdownHandle {
     flag: Arc<AtomicBool>,
+    reason: Arc<Mutex<Option<String>>>,
     socket: Option<std::path::PathBuf>,
 }
 
 impl ShutdownHandle {
     /// Set the flag, then poke the listener so `accept` returns.
     pub fn stop(&self) {
+        self.stop_because("shutdown requested");
+    }
+
+    /// The same, naming why, for the `daemon_stopping` event.
+    pub fn stop_because(&self, reason: impl Into<String>) {
+        if let Ok(mut slot) = self.reason.lock() {
+            slot.get_or_insert_with(|| reason.into());
+        }
         self.flag.store(true, Ordering::SeqCst);
         if let Some(path) = &self.socket {
             let _ = UnixStream::connect(path);
@@ -248,7 +317,7 @@ fn note(daemon: &Arc<Mutex<Daemon>>, event: impl FnOnce(&mut Daemon)) {
 }
 
 /// Serve one connection.
-fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
+fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>, hub: Arc<Hub>, heartbeat: Duration) {
     let peer = match peer_credentials(&stream) {
         Ok(peer) => peer,
         Err(reason) => {
@@ -274,9 +343,21 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
         return;
     }
 
-    note(&daemon, |daemon| {
-        daemon.record_client_accepted(peer.uid, peer.pid)
-    });
+    // Registered before the first byte is read, so `status` lists a connection
+    // that has not finished its handshake yet: it is open, and that is what
+    // the list claims. A poisoned lock leaves it unregistered, and every
+    // request on it is then answered `Io` anyway.
+    let connection = match daemon.lock() {
+        Ok(mut daemon) => daemon.open_connection(peer.uid, peer.pid),
+        Err(_) => 0,
+    };
+    let mut registered = Registered {
+        daemon: Arc::clone(&daemon),
+        hub: Arc::clone(&hub),
+        connection,
+        detail: "client closed the connection".to_string(),
+        framing_error: false,
+    };
 
     let Ok(write_half) = stream.try_clone() else {
         return;
@@ -291,16 +372,10 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
             Err(error) => {
                 // A framing failure leaves the stream unusable: answer once
                 // with the typed reason, then close. A clean end of stream is
-                // not a failure and has nothing to answer, so the two are told
-                // apart by what the error carries rather than by nesting the
-                // lock inside the question.
-                let ipc_error = error.as_ipc_error();
-                let detail = match &ipc_error {
-                    Some(_) => error.to_string(),
-                    None => "client closed the connection".to_string(),
-                };
-                note(&daemon, |daemon| daemon.record_client_disconnected(detail));
-                if let Some(ipc_error) = ipc_error {
+                // not a failure and has nothing to answer.
+                if let Some(ipc_error) = error.as_ipc_error() {
+                    registered.detail = error.to_string();
+                    registered.framing_error = true;
                     let _ = write_frame(&mut writer, &Response::Error(ipc_error));
                 }
                 return;
@@ -312,27 +387,94 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
         // the typed request anyway, and asking it in both layers was one gate
         // implemented twice, where a divergence would have let this one win in
         // silence.
-        if !handshake_done && !matches!(request, Request::Hello { .. }) {
+        let is_hello = matches!(request, Request::Hello { .. });
+        if !handshake_done && !is_hello {
             let _ = write_frame(&mut writer, &Response::Error(IpcError::HandshakeRequired));
             return;
         }
 
-        let response = match daemon.lock() {
-            Ok(mut daemon) => daemon.handle(request),
-            Err(_) => Response::Error(IpcError::Io {
-                detail: "daemon state is unavailable".to_string(),
-            }),
+        let after_seq = match &request {
+            Request::Subscribe { after_seq, .. } => Some(*after_seq),
+            _ => None,
         };
+        let (response, latest_seq) = match daemon.lock() {
+            Ok(mut daemon) => {
+                let response = daemon.handle(connection, request);
+                (response, daemon.latest_event_seq())
+            }
+            Err(_) => (
+                Response::Error(IpcError::Io {
+                    detail: "daemon state is unavailable".to_string(),
+                }),
+                0,
+            ),
+        };
+        // A request may have recorded an event or changed the status, which a
+        // subscriber should not have to wait for the next tick to see.
+        hub.notify();
 
-        // The daemon's answer is what settles the handshake: a `Hello` response
-        // means it accepted the version, and anything else is a refusal this
-        // connection cannot recover from, so it closes once the typed reason has
-        // been written.
-        let refused_handshake = !handshake_done && !matches!(response, Response::Hello { .. });
+        if let (Response::Subscribed { topics, interval_s }, Some(after_seq)) =
+            (&response, after_seq)
+        {
+            let plan = stream::Plan {
+                topics: topics.clone(),
+                interval_s: *interval_s,
+                // The cursor is taken under the same lock that accepted the
+                // subscription, so no event falls between the two.
+                cursor: after_seq.unwrap_or(latest_seq),
+                heartbeat,
+            };
+            registered.detail = if write_frame(&mut writer, &response).is_ok() {
+                stream::serve(reader.get_ref(), &mut writer, &daemon, &hub, plan)
+            } else {
+                "the subscriber closed the connection".to_string()
+            };
+            note(&daemon, Daemon::unsubscribe);
+            hub.notify();
+            return;
+        }
+
+        // The daemon's answer is what settles a handshake: a `Hello` response
+        // means it accepted the version and the name, and anything else is a
+        // refusal this connection cannot recover from, so it closes once the
+        // typed reason has been written. A second `Hello` is held to the same
+        // rule, so a name refused mid-conversation ends it exactly as it would
+        // have ended the first.
+        let refused_handshake = is_hello && !matches!(response, Response::Hello { .. });
+        if refused_handshake {
+            registered.detail = "handshake refused".to_string();
+        }
         if write_frame(&mut writer, &response).is_err() || refused_handshake {
             return;
         }
         handshake_done = true;
+    }
+}
+
+/// A connection's place in the daemon's registry, released however `serve`
+/// returns.
+///
+/// A guard rather than a call before each `return`: `serve` has five ways out,
+/// and a connection left in the registry would sit in `status.clients` for the
+/// life of the daemon.
+struct Registered {
+    daemon: Arc<Mutex<Daemon>>,
+    hub: Arc<Hub>,
+    connection: u64,
+    /// Why the connection ended, as the `client_disconnected` event says it.
+    detail: String,
+    /// True when a frame the daemon could not read ended it.
+    framing_error: bool,
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        let detail = std::mem::take(&mut self.detail);
+        let (connection, framing_error) = (self.connection, self.framing_error);
+        note(&self.daemon, |daemon| {
+            daemon.close_connection(connection, detail, framing_error)
+        });
+        self.hub.notify();
     }
 }
 

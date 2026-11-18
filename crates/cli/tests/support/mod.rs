@@ -51,6 +51,20 @@ pub fn korictl(socket: &Path, arguments: &[&str]) -> Run {
 
 /// The same, with `stdin` fed to the process.
 pub fn korictl_with(socket: &Path, arguments: &[&str], stdin: Option<&str>) -> Run {
+    korictl_full(socket, arguments, stdin, &[])
+}
+
+/// The same, with extra environment variables set.
+pub fn korictl_env(socket: &Path, arguments: &[&str], environment: &[(&str, &str)]) -> Run {
+    korictl_full(socket, arguments, None, environment)
+}
+
+fn korictl_full(
+    socket: &Path,
+    arguments: &[&str],
+    stdin: Option<&str>,
+    environment: &[(&str, &str)],
+) -> Run {
     let mut command = Command::new(env!("CARGO_BIN_EXE_korictl"));
     command
         .args(arguments)
@@ -58,6 +72,9 @@ pub fn korictl_with(socket: &Path, arguments: &[&str], stdin: Option<&str>) -> R
         // runtime directory would be talking to the machine's own daemon.
         .env("KORI_SOCKET", socket)
         .env_remove("KORI_RUNTIME_DIR")
+        // Nor is the name: a developer's shell must not rename the tests.
+        .env_remove("KORI_CLIENT")
+        .envs(environment.iter().copied())
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
@@ -149,6 +166,7 @@ fn serve(stream: UnixStream, stand: Stand) {
     let hello = Response::Hello {
         protocol_version: PROTOCOL_VERSION,
         daemon_version: "stand-in".into(),
+        connection: 1,
     };
     let _ = write_frame(&mut writer, &hello);
     line.clear();

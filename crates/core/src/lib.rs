@@ -103,6 +103,7 @@ pub mod capability;
 pub mod client;
 pub mod diagnostics;
 pub mod display;
+pub mod history;
 pub mod ipc;
 pub mod lighting;
 pub mod profile;

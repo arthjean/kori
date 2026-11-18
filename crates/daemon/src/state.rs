@@ -11,12 +11,14 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use kori_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord};
-use kori_core::diagnostics::{DiagnosticsLog, EventKind};
+use kori_core::diagnostics::{DiagnosticsLog, EVENTS_DEFAULT_LIMIT, EVENTS_MAX_LIMIT, EventKind};
 use kori_core::display::DisplayPreset;
+use kori_core::history::HistoryPlan;
 use kori_core::ipc::{
-    AccessMode, ActivationOutcome, ApplyOutcome, BlockedCapability, DaemonStatus, DeviceStatus,
-    DisplayOutcome, HardwareState, IpcError, LightingOutcome, OwnershipConflict, PROTOCOL_VERSION,
-    Request, Response,
+    AccessMode, ActivationOutcome, ApplyOutcome, Attribution, BlockedCapability, ConnectedClient,
+    CoolingState, DaemonStatus, DeviceStatus, DisplayOutcome, HardwareState, IpcError,
+    LightingOutcome, MAX_SUBSCRIPTIONS, OwnershipConflict, PROTOCOL_VERSION, Request, Response,
+    Revision, SUBSCRIBE_INTERVAL_S, Topic, WriteDomain, validate_client_name,
 };
 use kori_core::lighting::{LightingCommand, validate_command};
 use kori_core::profile::{
@@ -31,6 +33,7 @@ use kori_hardware_linux::probe::probe;
 use crate::config::{ConfigError, Configuration, ProgramToRestore};
 use crate::cooling::CoolingExecutor;
 use crate::display::DisplayExecutor;
+use crate::history::History;
 use crate::lighting::LightingExecutor;
 use crate::ownership::DeviceLock;
 use crate::paths::Paths;
@@ -68,6 +71,88 @@ pub struct Daemon {
     /// what detail", and a list forced one direction to compare whole records
     /// and the other to compare only the name.
     reported_failures: BTreeMap<Collector, String>,
+    /// When this instance started, as `status` reports it.
+    started_at_unix_ms: u64,
+    /// Every open connection, by the number its handshake was answered with.
+    connections: BTreeMap<u64, Connection>,
+    /// The number the next connection is given. Starts at 1 and never
+    /// repeats for the life of the process.
+    next_connection: u64,
+    /// Who the request being handled came from. [`Attribution::Daemon`]
+    /// outside [`Self::handle`], which is what a restore at startup is
+    /// attributed to.
+    actor: Attribution,
+    /// The stream fault the event log last recorded, so a fault is recorded
+    /// once per reason and its end exactly once, when a frame lands again.
+    stream_fault: Option<String>,
+    /// Recorded telemetry, one slot per tick, in memory only.
+    history: History,
+    /// Where each write domain stands, in memory only and reset at start:
+    /// `started_at_unix_ms` is what tells a client a revision is from an
+    /// earlier daemon.
+    revisions: Revisions,
+    /// Connections currently subscribed, at most [`MAX_SUBSCRIPTIONS`].
+    subscribers: u32,
+}
+
+/// The revision of every write domain.
+#[derive(Debug, Clone)]
+struct Revisions {
+    cooling: Revision,
+    /// One per lighting channel, created at revision 1 the first time it is
+    /// asked for.
+    lighting: BTreeMap<u8, Revision>,
+    display: Revision,
+}
+
+impl Revisions {
+    fn new() -> Self {
+        Self {
+            cooling: Revision::initial(),
+            lighting: BTreeMap::new(),
+            display: Revision::initial(),
+        }
+    }
+
+    fn lighting(&self, channel: u8) -> Revision {
+        self.lighting
+            .get(&channel)
+            .cloned()
+            .unwrap_or_else(Revision::initial)
+    }
+
+    fn get(&self, domain: WriteDomain, channel: Option<u8>) -> Revision {
+        match domain {
+            WriteDomain::Cooling => self.cooling.clone(),
+            WriteDomain::Lighting => self.lighting(channel.unwrap_or_default()),
+            WriteDomain::Display => self.display.clone(),
+        }
+    }
+
+    fn slot(&mut self, domain: WriteDomain, channel: Option<u8>) -> &mut Revision {
+        match domain {
+            WriteDomain::Cooling => &mut self.cooling,
+            WriteDomain::Lighting => self
+                .lighting
+                .entry(channel.unwrap_or_default())
+                .or_insert_with(Revision::initial),
+            WriteDomain::Display => &mut self.display,
+        }
+    }
+}
+
+/// What the daemon knows about one open connection.
+#[derive(Debug, Clone)]
+struct Connection {
+    uid: u32,
+    /// From `SO_PEERCRED`, so the kernel's answer rather than the client's.
+    pid: i32,
+    /// The label the connection gave itself in its handshake.
+    client: Option<String>,
+    connected_at_unix_ms: u64,
+    /// True once the connection wrote or subscribed, which is what earns it a
+    /// `client_accepted` event and, later, a `client_disconnected` one.
+    announced: bool,
 }
 
 impl Daemon {
@@ -101,9 +186,10 @@ impl Daemon {
     ) -> std::io::Result<Self> {
         paths.ensure()?;
 
+        let started_at_unix_ms = crate::now_unix_ms();
         let mut diagnostics = DiagnosticsLog::default();
         diagnostics.record(
-            crate::now_unix_ms(),
+            started_at_unix_ms,
             EventKind::DaemonStarted {
                 version: DAEMON_VERSION.to_string(),
                 socket_path: paths.socket.display().to_string(),
@@ -136,6 +222,14 @@ impl Daemon {
             lighting,
             display,
             reported_failures: BTreeMap::new(),
+            started_at_unix_ms,
+            connections: BTreeMap::new(),
+            next_connection: 1,
+            actor: Attribution::Daemon,
+            stream_fault: None,
+            history: History::new(),
+            revisions: Revisions::new(),
+            subscribers: 0,
         };
 
         daemon.record_access_mode();
@@ -211,6 +305,7 @@ impl Daemon {
                 EventKind::ProfileActivated {
                     name,
                     hardware: outcome.hardware.clone(),
+                    by: self.actor.clone(),
                 },
             ),
             None => {
@@ -220,6 +315,7 @@ impl Daemon {
                         EventKind::ProgramApplied {
                             hardware,
                             writes: 0,
+                            by: self.actor.clone(),
                         },
                     );
                 }
@@ -246,6 +342,7 @@ impl Daemon {
                         reason: error.to_string(),
                     },
                     frames: 0,
+                    by: Some(self.actor.clone()),
                 },
             );
         }
@@ -268,6 +365,7 @@ impl Daemon {
                             reason: error.to_string(),
                         },
                         writes: 0,
+                        by: self.actor.clone(),
                     },
                 );
             }
@@ -367,6 +465,17 @@ impl Daemon {
         DaemonStatus {
             daemon_version: DAEMON_VERSION.to_string(),
             protocol_version: PROTOCOL_VERSION,
+            started_at_unix_ms: self.started_at_unix_ms,
+            clients: self
+                .connections
+                .iter()
+                .map(|(number, connection)| ConnectedClient {
+                    connection: *number,
+                    client: connection.client.clone(),
+                    pid: connection.pid,
+                    connected_at_unix_ms: connection.connected_at_unix_ms,
+                })
+                .collect(),
             access: self.access_mode(),
             devices: self
                 .capabilities
@@ -378,9 +487,14 @@ impl Daemon {
             // What this process wrote and has not since uncommitted, not what
             // the file holds: a restore the hardware refused must not be
             // reported as a program the machine is running.
-            cooling: self.cooling.committed_program(),
-            lighting: self.lighting.state(),
-            display: self.display.state(),
+            cooling: CoolingState {
+                committed: self.cooling.committed_program(),
+                revision: self.revisions.cooling.clone(),
+            },
+            lighting: self
+                .lighting
+                .state(|channel| self.revisions.lighting(channel)),
+            display: self.display.state(self.revisions.display.clone()),
             socket_path: self.paths.socket.display().to_string(),
         }
     }
@@ -389,8 +503,18 @@ impl Daemon {
     ///
     /// Every rejection path returns before anything is written, so an invalid
     /// request cannot reach the hardware or the configuration file.
-    pub fn handle(&mut self, request: Request) -> Response {
-        let response = self.dispatch(request);
+    ///
+    /// `connection` is the number [`Self::open_connection`] gave the caller.
+    /// Everything this request changes is attributed to it.
+    pub fn handle(&mut self, connection: u64, request: Request) -> Response {
+        // A subscription is announced like a write: it is a connection that
+        // stays, and its departure is worth recording.
+        if request.writes() || matches!(request, Request::Subscribe { .. }) {
+            self.announce(connection);
+        }
+        self.actor = self.attribution(connection);
+        let response = self.dispatch(connection, request);
+        self.actor = Attribution::Daemon;
         if let Response::Error(error) = &response {
             self.diagnostics.record(
                 crate::now_unix_ms(),
@@ -402,20 +526,12 @@ impl Daemon {
         response
     }
 
-    fn dispatch(&mut self, request: Request) -> Response {
+    fn dispatch(&mut self, connection: u64, request: Request) -> Response {
         match request {
-            Request::Hello { protocol_version } => {
-                if protocol_version != PROTOCOL_VERSION {
-                    return Response::Error(IpcError::UnsupportedProtocol {
-                        requested: protocol_version,
-                        supported: PROTOCOL_VERSION,
-                    });
-                }
-                Response::Hello {
-                    protocol_version: PROTOCOL_VERSION,
-                    daemon_version: DAEMON_VERSION.to_string(),
-                }
-            }
+            Request::Hello {
+                protocol_version,
+                client,
+            } => self.hello(connection, protocol_version, client),
             Request::Status => Response::Status(Box::new(self.status())),
             Request::Capabilities => Response::Capabilities(Box::new(self.capabilities.clone())),
             Request::Profiles => Response::Profiles {
@@ -426,15 +542,37 @@ impl Daemon {
             Request::ActivateProfile { name } => self.activate_profile(&name),
             Request::DeleteProfile { name } => self.delete_profile(&name),
             Request::Telemetry => Response::Telemetry(Box::new(self.sampler.snapshot())),
-            Request::ApplyProgram { program } => match self.execute(&program) {
+            Request::ApplyProgram {
+                program,
+                expect_revision,
+            } => match self
+                .require_revision(WriteDomain::Cooling, None, expect_revision)
+                .and_then(|()| self.execute(&program))
+            {
                 Ok(outcome) => Response::Applied(Box::new(outcome)),
                 Err(error) => Response::Error(error),
             },
-            Request::ApplyLighting { command } => match self.illuminate(&command) {
+            Request::ApplyLighting {
+                command,
+                expect_revision,
+            } => match self
+                .require_revision(
+                    WriteDomain::Lighting,
+                    Some(command.channel),
+                    expect_revision,
+                )
+                .and_then(|()| self.illuminate(&command))
+            {
                 Ok(outcome) => Response::Lit(outcome),
                 Err(error) => Response::Error(error),
             },
-            Request::ApplyDisplay { preset } => match self.show(&preset) {
+            Request::ApplyDisplay {
+                preset,
+                expect_revision,
+            } => match self
+                .require_revision(WriteDomain::Display, None, expect_revision)
+                .and_then(|()| self.show(&preset))
+            {
                 Ok(outcome) => Response::Shown(Box::new(outcome)),
                 Err(error) => Response::Error(error),
             },
@@ -443,6 +581,36 @@ impl Daemon {
                 DAEMON_VERSION,
                 Some(self.capabilities.clone()),
             )),
+            Request::Events { after_seq, limit } => {
+                let limit = limit.unwrap_or(EVENTS_DEFAULT_LIMIT);
+                if limit > EVENTS_MAX_LIMIT {
+                    return Response::Error(IpcError::Malformed {
+                        detail: format!(
+                            "limit {limit} exceeds the {EVENTS_MAX_LIMIT} events the log holds"
+                        ),
+                    });
+                }
+                Response::Events(self.diagnostics.page(after_seq, limit))
+            }
+            Request::History {
+                metrics,
+                window_s,
+                step_s,
+                points,
+            } => match HistoryPlan::resolve(metrics.as_deref(), window_s, step_s, points) {
+                Ok(plan) => {
+                    Response::History(Box::new(self.history.answer(&plan, crate::now_unix_ms())))
+                }
+                Err(refusal) => Response::Error(IpcError::HistoryOutOfRange {
+                    limit: refusal.limit,
+                    detail: refusal.detail,
+                }),
+            },
+            Request::Subscribe {
+                topics,
+                interval_s,
+                after_seq: _,
+            } => self.subscribe(topics, interval_s),
         }
     }
 
@@ -539,7 +707,9 @@ impl Daemon {
         if *program == CoolingProgram::Onboard {
             // Nothing is written, so no capability is required. This is the
             // program the daemon falls back to, and it must never be refusable.
-            return Ok(self.cooling.apply(Instant::now(), program));
+            let outcome = self.cooling.apply(Instant::now(), program);
+            self.advance_revision(WriteDomain::Cooling, None, &outcome.hardware);
+            return Ok(outcome);
         }
 
         let details = program_incompatibilities(program, self.supported_device(KRAKEN_BASE)?);
@@ -550,11 +720,13 @@ impl Daemon {
         self.require_write_access()?;
 
         let outcome = self.cooling.apply(Instant::now(), program);
+        self.advance_revision(WriteDomain::Cooling, None, &outcome.hardware);
         self.diagnostics.record(
             crate::now_unix_ms(),
             EventKind::ProgramApplied {
                 hardware: outcome.hardware.clone(),
                 writes: outcome.writes,
+                by: self.actor.clone(),
             },
         );
         if outcome.hardware == HardwareState::Confirmed {
@@ -583,6 +755,11 @@ impl Daemon {
         self.require_write_access()?;
 
         let outcome = self.lighting.apply(Instant::now(), command);
+        self.advance_revision(
+            WriteDomain::Lighting,
+            Some(command.channel),
+            &outcome.hardware,
+        );
         self.diagnostics.record(
             crate::now_unix_ms(),
             EventKind::LightingApplied {
@@ -590,6 +767,7 @@ impl Daemon {
                 program: outcome.program.summary(),
                 hardware: outcome.hardware.clone(),
                 writes: outcome.writes,
+                by: self.actor.clone(),
             },
         );
         if outcome.hardware == HardwareState::Confirmed {
@@ -621,18 +799,77 @@ impl Daemon {
 
         let samples = preset.samples(&self.sampler.snapshot());
         let outcome = self.display.apply(preset, &samples)?;
+        self.advance_revision(WriteDomain::Display, None, &outcome.hardware);
+        // A command restarts the stream and records its own event, so a fault
+        // the log was holding is settled by that event rather than by a
+        // recovery the stream did not make.
+        self.stream_fault = None;
         self.diagnostics.record(
             crate::now_unix_ms(),
             EventKind::DisplayApplied {
                 mode: preset.mode.key().to_string(),
                 hardware: outcome.hardware.clone(),
                 frames: outcome.frames,
+                by: Some(self.actor.clone()),
             },
         );
         if outcome.hardware == HardwareState::Confirmed {
             self.remember(|config| config.record_display(preset));
         }
         Ok(outcome)
+    }
+
+    /// Refuse a write whose precondition no longer holds.
+    ///
+    /// Asked before anything else about the write, so a stale client is told
+    /// so before it learns anything about its payload, and nothing reaches the
+    /// hardware or the configuration file. Without `expected`, the last writer
+    /// wins, which is how every client wrote before revisions existed.
+    fn require_revision(
+        &self,
+        domain: WriteDomain,
+        channel: Option<u8>,
+        expected: Option<u64>,
+    ) -> Result<(), IpcError> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let current = self.revisions.get(domain, channel);
+        if current.revision == expected {
+            return Ok(());
+        }
+        Err(IpcError::Conflict {
+            domain,
+            channel: channel.filter(|_| domain == WriteDomain::Lighting),
+            expected,
+            current: current.revision,
+            changed_by: current.changed_by,
+        })
+    }
+
+    /// Count one accepted write command in `domain`.
+    ///
+    /// The restore at startup is what revision 1 describes, so the daemon's
+    /// own writes leave the number where it is; every write a connection
+    /// asked for, a profile activation included, moves it. A command answered
+    /// `not_applied` changed nothing (a lighting command inside the cadence
+    /// floor, a panel that is not there), so it moves nothing either: a
+    /// revision that advanced without a change would refuse the next client
+    /// over a write that never happened.
+    fn advance_revision(
+        &mut self,
+        domain: WriteDomain,
+        channel: Option<u8>,
+        hardware: &HardwareState,
+    ) {
+        if self.actor == Attribution::Daemon || matches!(hardware, HardwareState::NotApplied { .. })
+        {
+            return;
+        }
+        let changed_by = self.actor.clone();
+        let slot = self.revisions.slot(domain, channel);
+        slot.revision += 1;
+        slot.changed_by = changed_by;
     }
 
     /// Persist part of the committed state, without letting the disk speak for
@@ -667,6 +904,7 @@ impl Daemon {
     /// the one the panel already holds.
     pub fn tick(&mut self, now: Instant) {
         let snapshot = self.sampler.snapshot();
+        self.history.record(&snapshot, crate::now_unix_ms());
         self.reconcile(&snapshot);
 
         // The panel is on the device the reconciliation may have just declared
@@ -682,29 +920,89 @@ impl Daemon {
             return;
         };
         let samples = preset.samples(&snapshot);
-        // A frame that landed and a transfer that stopped the stream are both
-        // recorded. Only the first was, which left the event that matters most
-        // as the one thing the log could not carry: a stream stops with
-        // `frames: 0`, so the record of an hour of frozen panel was an hour of
-        // silence, and the reason lived only in a field a closed window was not
-        // reading.
-        if let Some(outcome) = self.display.refresh(now, &samples)
-            && (outcome.frames > 0 || !matches!(outcome.hardware, HardwareState::Confirmed))
-        {
-            self.diagnostics.record(
-                crate::now_unix_ms(),
-                EventKind::DisplayApplied {
-                    mode: preset.mode.key().to_string(),
-                    hardware: outcome.hardware,
-                    frames: outcome.frames,
-                },
-            );
+        // Only a change of the stream's state is recorded: the first failure
+        // for each reason, and the first frame that lands after one. A frame
+        // that lands after a frame that landed is the steady state, which the
+        // counters in `status.display` carry. Recording each one made the
+        // panel nine events in ten of the ring and pushed out the startup
+        // within minutes, while the failure that matters most was the one a
+        // stream stopping with `frames: 0` used to leave unrecorded.
+        let outcome = self.display.refresh(now, &samples);
+        let landed = outcome.as_ref().is_some_and(|outcome| {
+            outcome.frames > 0 && outcome.hardware == HardwareState::Confirmed
+        });
+        // A refresh that faulted without an outcome is a preset that stopped
+        // rendering, which reached no hardware at all.
+        let hardware = outcome.map(|outcome| outcome.hardware);
+        self.record_stream_transition(landed, hardware, |reason| HardwareState::NotApplied {
+            reason,
+        });
+    }
+
+    /// Record the stream stopping for a reason not yet recorded, or landing its
+    /// first frame after a stop.
+    ///
+    /// `hardware` is what the pass reported when it reported anything, and
+    /// `otherwise` builds the state for a fault the pass did not describe.
+    fn record_stream_transition(
+        &mut self,
+        landed: bool,
+        hardware: Option<HardwareState>,
+        otherwise: impl FnOnce(String) -> HardwareState,
+    ) {
+        let mode = || {
+            self.display
+                .active()
+                .map_or_else(String::new, |preset| preset.mode.key().to_string())
+        };
+        match self.display.fault_reason() {
+            Some(reason) if self.stream_fault.as_deref() != Some(reason) => {
+                let reason = reason.to_string();
+                let hardware = match hardware {
+                    Some(state) if state != HardwareState::Confirmed => state,
+                    _ => otherwise(reason.clone()),
+                };
+                let event = EventKind::DisplayApplied {
+                    mode: mode(),
+                    hardware,
+                    frames: 0,
+                    by: None,
+                };
+                self.diagnostics.record(crate::now_unix_ms(), event);
+                self.stream_fault = Some(reason);
+            }
+            Some(_) => {}
+            None => {
+                if landed && self.stream_fault.is_some() {
+                    let event = EventKind::DisplayApplied {
+                        mode: mode(),
+                        hardware: HardwareState::Confirmed,
+                        frames: 1,
+                        by: None,
+                    };
+                    self.diagnostics.record(crate::now_unix_ms(), event);
+                    self.stream_fault = None;
+                }
+            }
         }
     }
 
-    /// Record a sample that arrived while a frame was still being written.
-    pub fn drop_display_frame(&mut self) {
-        self.display.drop_frame();
+    /// Record the start of an orderly shutdown.
+    pub fn record_stopping(&mut self, reason: String) {
+        self.diagnostics
+            .record(crate::now_unix_ms(), EventKind::DaemonStopping { reason });
+    }
+
+    /// Account for ticks the clock slept through.
+    ///
+    /// Each is a frame the panel will never get and a second the history
+    /// records as null, so the history keeps one slot per second whatever the
+    /// ticker managed.
+    pub fn skip_ticks(&mut self, count: u32) {
+        for _ in 0..count {
+            self.display.drop_frame();
+        }
+        self.history.record_gap(count, crate::now_unix_ms());
     }
 
     /// Advance a playing animation, and say when its next frame is due.
@@ -712,13 +1010,23 @@ impl Daemon {
     /// `None` means nothing is playing, so the caller has only the telemetry
     /// cadence to wake for.
     ///
-    /// No diagnostic is recorded per frame, unlike [`Self::tick`]. An
-    /// animation runs at up to a dozen frames a second, which would fill the
-    /// event ring in a couple of minutes and push out the events that say what
-    /// the hardware actually did. A transfer that fails still stops the stream
-    /// and names itself, through the state the executor publishes.
+    /// No diagnostic is recorded per frame. An animation runs at up to a dozen
+    /// frames a second, which would fill the event ring in a couple of minutes
+    /// and push out the events that say what the hardware actually did. What is
+    /// recorded is the same as for the telemetry stream: a transfer that stops
+    /// the animation, once per reason, and the first frame that lands after it.
     pub fn tick_animation(&mut self, now: Instant) -> Option<Instant> {
-        self.display.advance_animation(now)
+        let was_faulted = self.display.fault_reason().is_some();
+        let due = self.display.advance_animation(now);
+        // The executor clears a fault only when a frame lands, so a fault that
+        // was standing before this pass and is gone after it is one.
+        let landed = was_faulted && self.display.fault_reason().is_none();
+        if was_faulted || self.display.fault_reason().is_some() {
+            self.record_stream_transition(landed, None, |reason| HardwareState::Uncertain {
+                reason,
+            });
+        }
+        due
     }
 
     fn save_profile(&mut self, profile: Profile) -> Response {
@@ -727,7 +1035,10 @@ impl Daemon {
             Ok(()) => {
                 self.diagnostics.record(
                     crate::now_unix_ms(),
-                    EventKind::ProfileSaved { name: name.clone() },
+                    EventKind::ProfileSaved {
+                        name: name.clone(),
+                        by: self.actor.clone(),
+                    },
                 );
                 Response::Saved { name }
             }
@@ -818,6 +1129,7 @@ impl Daemon {
                     crate::now_unix_ms(),
                     EventKind::ProfileDeleted {
                         name: name.to_string(),
+                        by: self.actor.clone(),
                     },
                 );
                 Response::Deleted {
@@ -829,22 +1141,173 @@ impl Daemon {
         }
     }
 
+    /// Answer a handshake, and take the name the connection gave itself.
+    ///
+    /// The version is asked first, so a client of another protocol is told
+    /// the two versions whatever else its handshake carried.
+    fn hello(
+        &mut self,
+        connection: u64,
+        protocol_version: u32,
+        client: Option<String>,
+    ) -> Response {
+        if protocol_version != PROTOCOL_VERSION {
+            return Response::Error(IpcError::UnsupportedProtocol {
+                requested: protocol_version,
+                supported: PROTOCOL_VERSION,
+            });
+        }
+        if let Some(name) = &client
+            && let Err(detail) = validate_client_name(name)
+        {
+            return Response::Error(IpcError::Malformed { detail });
+        }
+        if let Some(entry) = self.connections.get_mut(&connection) {
+            entry.client = client;
+        }
+        Response::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            daemon_version: DAEMON_VERSION.to_string(),
+            connection,
+        }
+    }
+
+    /// Accept a subscription, or say why not.
+    ///
+    /// Taking the slot here, under the same lock every other request takes,
+    /// is what makes the ceiling exact: two connections subscribing at once
+    /// cannot both be the eighth. The server gives the slot back through
+    /// [`Self::unsubscribe`] when the stream ends, however it ends.
+    fn subscribe(&mut self, topics: Vec<Topic>, interval_s: Option<u32>) -> Response {
+        let mut topics = topics;
+        topics.sort();
+        topics.dedup();
+        if topics.is_empty() {
+            return Response::Error(IpcError::Malformed {
+                detail: "topics is empty; name telemetry, status or events".to_string(),
+            });
+        }
+        let interval_s = interval_s.unwrap_or(1);
+        if !SUBSCRIBE_INTERVAL_S.contains(&interval_s) {
+            return Response::Error(IpcError::Malformed {
+                detail: format!(
+                    "interval_s {interval_s} is outside {} to {} seconds",
+                    SUBSCRIBE_INTERVAL_S.start(),
+                    SUBSCRIBE_INTERVAL_S.end()
+                ),
+            });
+        }
+        if self.subscribers >= MAX_SUBSCRIPTIONS {
+            return Response::Error(IpcError::SubscriptionLimit {
+                max: MAX_SUBSCRIPTIONS,
+            });
+        }
+        self.subscribers += 1;
+        Response::Subscribed { topics, interval_s }
+    }
+
+    /// Give back the slot a subscription took.
+    pub fn unsubscribe(&mut self) {
+        self.subscribers = self.subscribers.saturating_sub(1);
+    }
+
+    /// Subscriptions currently served.
+    pub fn subscribers(&self) -> u32 {
+        self.subscribers
+    }
+
+    /// The newest sampling pass, as the `telemetry` request answers it.
+    pub fn telemetry(&self) -> TelemetrySnapshot {
+        self.sampler.snapshot()
+    }
+
+    /// Sequence number of the newest event recorded.
+    pub fn latest_event_seq(&self) -> u64 {
+        self.diagnostics.latest_seq()
+    }
+
+    /// The events after `cursor`, swept of secrets, at most `limit`.
+    pub fn events_after(&self, cursor: u64, limit: u32) -> kori_core::diagnostics::EventPage {
+        self.diagnostics.page(Some(cursor), limit)
+    }
+
+    /// Register a connection that passed the peer check, and number it.
+    pub fn open_connection(&mut self, uid: u32, pid: i32) -> u64 {
+        let number = self.next_connection;
+        self.next_connection += 1;
+        self.connections.insert(
+            number,
+            Connection {
+                uid,
+                pid,
+                client: None,
+                connected_at_unix_ms: crate::now_unix_ms(),
+                announced: false,
+            },
+        );
+        number
+    }
+
+    /// Drop a connection from the registry.
+    ///
+    /// The close is recorded only for a connection that earned a
+    /// `client_accepted`, or when the connection was ended by a framing error,
+    /// which is a fault worth keeping whoever made it. A read that came and
+    /// went leaves the log as it found it.
+    pub fn close_connection(&mut self, connection: u64, detail: String, framing_error: bool) {
+        let Some(entry) = self.connections.remove(&connection) else {
+            return;
+        };
+        if entry.announced || framing_error {
+            self.diagnostics.record(
+                crate::now_unix_ms(),
+                EventKind::ClientDisconnected {
+                    connection,
+                    client: entry.client,
+                    detail,
+                },
+            );
+        }
+    }
+
+    /// Record a connection's first write, once.
+    fn announce(&mut self, connection: u64) {
+        let Some(entry) = self.connections.get_mut(&connection) else {
+            return;
+        };
+        if entry.announced {
+            return;
+        }
+        entry.announced = true;
+        let event = EventKind::ClientAccepted {
+            connection,
+            client: entry.client.clone(),
+            uid: entry.uid,
+            pid: entry.pid,
+        };
+        self.diagnostics.record(crate::now_unix_ms(), event);
+    }
+
+    /// The attribution of what `connection` changes.
+    ///
+    /// A number the registry does not hold is attributed to the daemon rather
+    /// than to an invented client: it only happens for a request handled
+    /// outside a connection, which is the daemon acting for itself.
+    fn attribution(&self, connection: u64) -> Attribution {
+        match self.connections.get(&connection) {
+            Some(entry) => Attribution::Client {
+                connection,
+                client: entry.client.clone(),
+                pid: entry.pid,
+            },
+            None => Attribution::Daemon,
+        }
+    }
+
     /// Record a client that failed the local peer check.
     pub fn record_client_rejected(&mut self, reason: String) {
         self.diagnostics
             .record(crate::now_unix_ms(), EventKind::ClientRejected { reason });
-    }
-
-    pub fn record_client_accepted(&mut self, uid: u32, pid: i32) {
-        self.diagnostics
-            .record(crate::now_unix_ms(), EventKind::ClientAccepted { uid, pid });
-    }
-
-    pub fn record_client_disconnected(&mut self, detail: String) {
-        self.diagnostics.record(
-            crate::now_unix_ms(),
-            EventKind::ClientDisconnected { detail },
-        );
     }
 }
 

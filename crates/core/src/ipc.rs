@@ -38,7 +38,7 @@ use crate::telemetry::{PwmMode, TelemetrySnapshot};
 /// is a refusal naming both versions rather than a frame one side misreads.
 /// What each version changed, and which quiet disagreement the bump exists to
 /// prevent, is recorded in `docs/schema-history.md`.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// A request from the GPUI client to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,8 +46,18 @@ pub const PROTOCOL_VERSION: u32 = 9;
 // field checking lives on the payload structs (`Profile`, `TemperatureCurve`).
 #[serde(tag = "request", rename_all = "snake_case")]
 pub enum Request {
-    /// Negotiate the protocol version. Sent before anything else.
-    Hello { protocol_version: u32 },
+    /// Negotiate the protocol version, and optionally name the client. Sent
+    /// before anything else.
+    ///
+    /// `client` is a label the connection chooses for itself, checked by
+    /// [`validate_client_name`]. It is not proof of anything: the process ID
+    /// and the user a write is attributed to come from the kernel, and the name
+    /// only makes the attribution readable.
+    Hello {
+        protocol_version: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<String>,
+    },
     /// Current daemon, device and ownership state.
     Status,
     /// The versioned capability record for every allowlisted device.
@@ -67,21 +77,175 @@ pub enum Request {
     ///
     /// This is what the Cooling screen's Apply activates. The daemon
     /// revalidates every value before the first write.
-    ApplyProgram { program: CoolingProgram },
+    ///
+    /// With `expect_revision`, the write is refused with
+    /// [`IpcError::Conflict`] unless the cooling revision is still that one.
+    ApplyProgram {
+        program: CoolingProgram,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_revision: Option<u64>,
+    },
     /// Apply a lighting program to one channel of the RGB controller.
     ///
     /// The daemon revalidates the program, checks it against the topology the
     /// controller reported, and enforces the command cadence before any byte
     /// is sent.
-    ApplyLighting { command: LightingCommand },
+    ///
+    /// `expect_revision` is the revision of the channel the command names.
+    ApplyLighting {
+        command: LightingCommand,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_revision: Option<u64>,
+    },
     /// Show a preset on the Kraken's panel.
     ///
     /// The preset travels, never the pixels: the daemon renders it with the
     /// same crate the client previews it with, so the two cannot drift, and a
     /// panel keeps updating after the window closes.
-    ApplyDisplay { preset: DisplayPreset },
+    ApplyDisplay {
+        preset: DisplayPreset,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_revision: Option<u64>,
+    },
     /// Redacted diagnostics for an issue report.
     Diagnostics,
+    /// A page of the event log.
+    ///
+    /// With `after_seq`, the events recorded after it, oldest first; without,
+    /// the newest ones. `limit` defaults to
+    /// [`crate::diagnostics::EVENTS_DEFAULT_LIMIT`] and may not exceed
+    /// [`crate::diagnostics::EVENTS_MAX_LIMIT`].
+    Events {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_seq: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
+    /// Recorded telemetry, summarized and optionally as points.
+    ///
+    /// Every field is optional: `metrics` defaults to all of them, `window_s`
+    /// to 900, `step_s` to 1 for a window up to 900 s and to 60 beyond, and
+    /// `points` to false. The limits are in [`crate::history`].
+    History {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metrics: Option<Vec<crate::history::HistoryMetric>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_s: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_s: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        points: Option<bool>,
+    },
+    /// Turn this connection into a pushed stream.
+    ///
+    /// Answered with [`Response::Subscribed`]; from then on the connection
+    /// carries only [`Push`] frames, and nothing the client sends is read. The
+    /// client unsubscribes by closing the connection. `interval_s` (1 to 60,
+    /// default 1) paces the telemetry push in ticks of the daemon's one-second
+    /// clock. With `after_seq`, the events after it are pushed first.
+    Subscribe {
+        topics: Vec<Topic>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interval_s: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_seq: Option<u64>,
+    },
+}
+
+/// What a subscription carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Topic {
+    /// A snapshot every `interval_s` ticks.
+    Telemetry,
+    /// The status once at once, then whenever it differs from the last one
+    /// pushed on this connection.
+    Status,
+    /// Every event recorded after the cursor.
+    Events,
+}
+
+/// Most subscriptions the daemon serves at once.
+pub const MAX_SUBSCRIPTIONS: u32 = 8;
+
+/// Frames one subscriber may have waiting before events are dropped.
+pub const SUBSCRIBER_QUEUE: usize = 64;
+
+/// Longest a push may wait on a subscriber that stopped reading.
+pub const SUBSCRIBER_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Longest a subscription goes without a frame: a heartbeat fills the gap.
+pub const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The range `interval_s` may take.
+pub const SUBSCRIBE_INTERVAL_S: std::ops::RangeInclusive<u32> = 1..=60;
+
+/// A frame the daemon pushes on a subscribed connection, tagged `push`.
+///
+/// A third tag beside `request` and `response`, so a reader can never take a
+/// push for the answer to something it asked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "push", rename_all = "snake_case")]
+pub enum Push {
+    Telemetry(Box<TelemetrySnapshot>),
+    Status(Box<DaemonStatus>),
+    Event(crate::diagnostics::DiagnosticEvent),
+    /// Nothing else was written for [`HEARTBEAT_INTERVAL`]. A subscriber that
+    /// sees neither this nor anything else for longer knows the daemon is gone.
+    Heartbeat {
+        at_unix_ms: u64,
+    },
+    /// Events this subscriber will never see: they left the ring before it
+    /// could be sent them, or it fell [`SUBSCRIBER_QUEUE`] frames behind.
+    Lagged {
+        missed: u64,
+    },
+    /// The daemon is shutting down and closes this connection next.
+    Closing {
+        reason: String,
+    },
+}
+
+impl Push {
+    /// The name this frame travels under.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Telemetry(_) => "telemetry",
+            Self::Status(_) => "status",
+            Self::Event(_) => "event",
+            Self::Heartbeat { .. } => "heartbeat",
+            Self::Lagged { .. } => "lagged",
+            Self::Closing { .. } => "closing",
+        }
+    }
+}
+
+impl Request {
+    /// True for a request that may change the hardware or the stored
+    /// configuration.
+    ///
+    /// Matched variant by variant rather than defaulted, so a request added
+    /// later has to be classified by whoever adds it: a write that slipped into
+    /// the read column would go unattributed and unannounced.
+    pub fn writes(&self) -> bool {
+        match self {
+            Self::SaveProfile { .. }
+            | Self::ActivateProfile { .. }
+            | Self::DeleteProfile { .. }
+            | Self::ApplyProgram { .. }
+            | Self::ApplyLighting { .. }
+            | Self::ApplyDisplay { .. } => true,
+            Self::Hello { .. }
+            | Self::Status
+            | Self::Capabilities
+            | Self::Profiles
+            | Self::Telemetry
+            | Self::Diagnostics
+            | Self::Events { .. }
+            | Self::History { .. }
+            | Self::Subscribe { .. } => false,
+        }
+    }
 }
 
 /// A response from the daemon.
@@ -95,6 +259,9 @@ pub enum Response {
     Hello {
         protocol_version: u32,
         daemon_version: String,
+        /// This connection's number, unique for the life of the daemon. It is
+        /// what the daemon's events and revisions name this connection by.
+        connection: u64,
     },
     Status(Box<DaemonStatus>),
     Capabilities(Box<CapabilityRecord>),
@@ -115,6 +282,12 @@ pub enum Response {
     Lit(LightingOutcome),
     Shown(Box<DisplayOutcome>),
     Diagnostics(crate::diagnostics::DiagnosticsExport),
+    Events(crate::diagnostics::EventPage),
+    History(Box<crate::history::HistoryReply>),
+    Subscribed {
+        topics: Vec<Topic>,
+        interval_s: u32,
+    },
     Error(IpcError),
 }
 
@@ -139,6 +312,9 @@ impl Response {
             Self::Lit(_) => "lit",
             Self::Shown(_) => "shown",
             Self::Diagnostics(_) => "diagnostics",
+            Self::Events(_) => "events",
+            Self::History(_) => "history",
+            Self::Subscribed { .. } => "subscribed",
             Self::Error(_) => "error",
         }
     }
@@ -200,6 +376,8 @@ pub struct DisplayState {
     pub committed: Option<DisplayPreset>,
     /// True while a preset that reads telemetry is being streamed.
     pub streaming: bool,
+    #[serde(flatten)]
+    pub revision: Revision,
     /// Why the stream stopped, once a transfer failed.
     ///
     /// [`DisplayState::streaming`] cannot say this on its own: it is equally
@@ -213,6 +391,16 @@ pub struct DisplayState {
     /// sample arrived. The streamer keeps at most one frame pending, so this
     /// counts what that ceiling discarded.
     pub dropped_frames: u64,
+    /// Frames the panel took since the daemon started.
+    ///
+    /// The steady state of the stream lives here rather than in the event log:
+    /// a healthy frame a second is not an event, and recording each one used to
+    /// push every other event out of the ring within minutes.
+    pub frames_sent: u64,
+    /// Transfers that failed since the daemon started.
+    pub failed_transfers: u64,
+    /// When the panel last took a frame, if it ever did.
+    pub last_frame_at_unix_ms: Option<u64>,
 }
 
 /// What one lighting channel is currently showing, as far as the daemon knows.
@@ -223,6 +411,8 @@ pub struct ChannelState {
     pub accessories: Vec<String>,
     /// The last program the daemon committed, when it has committed one.
     pub committed: Option<LightingProgram>,
+    #[serde(flatten)]
+    pub revision: Revision,
 }
 
 /// What actually happened to the hardware when a profile was activated.
@@ -311,6 +501,114 @@ pub enum HardwareState {
     Uncertain { reason: String },
 }
 
+/// Longest name a client may give itself in [`Request::Hello`].
+pub const MAX_CLIENT_NAME_LEN: usize = 32;
+
+/// Check a client name: 1 to [`MAX_CLIENT_NAME_LEN`] characters, each a
+/// lowercase ASCII letter, a digit, `.`, `_` or `-`.
+///
+/// Narrow on purpose. The name is printed in events, in `status` and on the
+/// window's "Changed by" line, so it must not be able to carry a newline, a
+/// control character or a look-alike of another client's name.
+pub fn validate_client_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("client name is empty".to_string());
+    }
+    if name.len() > MAX_CLIENT_NAME_LEN {
+        return Err(format!(
+            "client name is {} characters long; the limit is {MAX_CLIENT_NAME_LEN}",
+            name.len()
+        ));
+    }
+    if let Some(refused) = name
+        .chars()
+        .find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')))
+    {
+        return Err(format!(
+            "client name contains {refused:?}; only a-z, 0-9, '.', '_' and '-' are allowed"
+        ));
+    }
+    Ok(())
+}
+
+/// Who caused a change: a connection, or the daemon itself.
+///
+/// The process ID is the kernel's answer (`SO_PEERCRED`), taken when the
+/// connection was accepted. The client name is whatever that connection said
+/// in its handshake, so it labels the write rather than proving who made it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", rename_all = "snake_case")]
+pub enum Attribution {
+    Client {
+        connection: u64,
+        client: Option<String>,
+        pid: i32,
+    },
+    /// The daemon acting on its own, such as restoring the operator's last
+    /// state at startup.
+    Daemon,
+}
+
+/// Where a write domain stands: how many accepted writes it has taken since
+/// the daemon started, and who made the last one.
+///
+/// 1 is the state the daemon restored at startup, attributed to the daemon.
+/// Each accepted write command adds one; the frames the stream sends on its own
+/// do not. A client that read revision `n` and writes with
+/// `expect_revision: n` is refused if anything wrote in between, rather than
+/// silently overwriting it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Revision {
+    pub revision: u64,
+    pub changed_by: Attribution,
+}
+
+impl Revision {
+    /// The revision of a domain the daemon has not been asked to change.
+    pub fn initial() -> Self {
+        Self {
+            revision: 1,
+            changed_by: Attribution::Daemon,
+        }
+    }
+}
+
+/// A write domain a revision belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteDomain {
+    Cooling,
+    /// One lighting channel. Each has its own revision.
+    Lighting,
+    Display,
+}
+
+/// The thermal program, as `status` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoolingState {
+    /// The program the daemon last committed, when it committed one.
+    ///
+    /// A duty can be read back from the driver, but a curve cannot: the device
+    /// publishes no attribute that returns the shape it was given. The
+    /// daemon's own record is therefore the only place a curve exists, and a
+    /// client that could not see it would open on a plot the machine is not
+    /// running and make the operator draw theirs again.
+    pub committed: Option<CoolingProgram>,
+    #[serde(flatten)]
+    pub revision: Revision,
+}
+
+/// One open connection, as `status` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedClient {
+    pub connection: u64,
+    /// The name the connection gave itself, when it gave one.
+    pub client: Option<String>,
+    /// From the kernel, not from the client.
+    pub pid: i32,
+    pub connected_at_unix_ms: u64,
+}
+
 /// Whether the daemon may write at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -395,18 +693,18 @@ impl ConfigState {
 pub struct DaemonStatus {
     pub daemon_version: String,
     pub protocol_version: u32,
+    /// When this daemon started. Revisions, connection numbers, event
+    /// sequence numbers and the telemetry history all restart with it, so a
+    /// client that sees this change knows every number it held is void.
+    pub started_at_unix_ms: u64,
+    /// Every open connection, the asking one included.
+    pub clients: Vec<ConnectedClient>,
     pub access: AccessMode,
     pub devices: Vec<DeviceStatus>,
     pub active_profile: String,
     pub config: ConfigState,
-    /// The thermal program the daemon last committed, when it committed one.
-    ///
-    /// A duty can be read back from the driver, but a curve cannot: the device
-    /// publishes no attribute that returns the shape it was given. The daemon's
-    /// own record is therefore the only place a curve exists, and a client that
-    /// could not see it would open on a plot the machine is not running and
-    /// make the operator draw theirs again.
-    pub cooling: Option<CoolingProgram>,
+    /// The thermal program the daemon last committed, and its revision.
+    pub cooling: CoolingState,
     /// Lighting channels the controller reported, empty when it reported none.
     pub lighting: Vec<ChannelState>,
     /// The panel's geometry and what it was last told to show.
@@ -447,6 +745,23 @@ pub enum IpcError {
     NoDevice,
     #[error("Local operation failed: {detail}")]
     Io { detail: String },
+    #[error("The {domain:?} state changed since revision {expected}; it is at {current} now.")]
+    Conflict {
+        domain: WriteDomain,
+        /// The lighting channel, for a lighting conflict.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel: Option<u8>,
+        expected: u64,
+        current: u64,
+        changed_by: Attribution,
+    },
+    #[error("The daemon already serves {max} subscriptions.")]
+    SubscriptionLimit { max: u32 },
+    #[error("History request is out of range: {detail}")]
+    HistoryOutOfRange {
+        limit: crate::history::HistoryLimit,
+        detail: String,
+    },
 }
 
 #[cfg(test)]
@@ -460,18 +775,27 @@ mod tests {
         let status = DaemonStatus {
             daemon_version: "0.1.0".into(),
             protocol_version: PROTOCOL_VERSION,
+            started_at_unix_ms: 0,
+            clients: Vec::new(),
             access: AccessMode::ReadWrite,
             devices: Vec::new(),
             active_profile: "Onboard safe".into(),
             config: ConfigState::Defaults,
-            cooling: None,
+            cooling: CoolingState {
+                committed: None,
+                revision: Revision::initial(),
+            },
             lighting: Vec::new(),
             display: DisplayState {
                 panel: None,
                 committed: None,
                 streaming: false,
+                revision: Revision::initial(),
                 faulted: None,
                 dropped_frames: 0,
+                frames_sent: 0,
+                failed_transfers: 0,
+                last_frame_at_unix_ms: None,
             },
             socket_path: "/run/user/1000/kori/kori.sock".into(),
         };
@@ -490,6 +814,7 @@ mod tests {
             Response::Hello {
                 protocol_version: PROTOCOL_VERSION,
                 daemon_version: "0.1.0".into(),
+                connection: 1,
             },
             Response::Status(Box::new(status)),
             Response::Capabilities(Box::new(record)),
@@ -531,6 +856,18 @@ mod tests {
             Response::Diagnostics(
                 crate::diagnostics::DiagnosticsLog::default().export(0, "0.1.0", None),
             ),
+            Response::Events(crate::diagnostics::DiagnosticsLog::default().page(None, 10)),
+            Response::Subscribed {
+                topics: vec![Topic::Events],
+                interval_s: 1,
+            },
+            Response::History(Box::new(crate::history::HistoryReply {
+                end_unix_ms: 0,
+                step_s: 1,
+                slots: 0,
+                available_s: 0,
+                metrics: std::collections::BTreeMap::new(),
+            })),
             Response::Error(IpcError::NoDevice),
         ];
 
@@ -549,6 +886,75 @@ mod tests {
                 response.kind()
             );
             seen.push(response.kind());
+        }
+    }
+
+    #[test]
+    fn a_client_name_is_short_lowercase_and_printable() {
+        for good in ["kori", "korictl", "claude-code", "agent_1.2", "a"] {
+            assert_eq!(validate_client_name(good), Ok(()), "{good}");
+        }
+        let long = "a".repeat(MAX_CLIENT_NAME_LEN + 1);
+        assert!(validate_client_name(&"a".repeat(MAX_CLIENT_NAME_LEN)).is_ok());
+        for bad in [
+            "",
+            long.as_str(),
+            "Kori",
+            "two words",
+            "line\nbreak",
+            "é",
+            "a/b",
+        ] {
+            assert!(validate_client_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn attribution_travels_in_the_documented_shape() {
+        let by = Attribution::Client {
+            connection: 7,
+            client: Some("korictl".into()),
+            pid: 4242,
+        };
+        assert_eq!(
+            serde_json::to_value(&by).unwrap(),
+            serde_json::json!({"origin":"client","connection":7,"client":"korictl","pid":4242})
+        );
+        assert_eq!(
+            serde_json::to_value(Attribution::Daemon).unwrap(),
+            serde_json::json!({"origin":"daemon"})
+        );
+    }
+
+    #[test]
+    fn a_push_travels_under_its_own_tag_and_round_trips() {
+        let mut log = crate::diagnostics::DiagnosticsLog::default();
+        log.record(
+            7,
+            crate::diagnostics::EventKind::ProfileSaved {
+                name: "Silent".into(),
+                by: Attribution::Daemon,
+            },
+        );
+        let event = log.events().next().unwrap().clone();
+        let pushes = vec![
+            Push::Telemetry(Box::new(TelemetrySnapshot::unavailable(
+                0,
+                crate::telemetry::Unavailable::absent("no hwmon"),
+            ))),
+            Push::Event(event),
+            Push::Heartbeat { at_unix_ms: 1 },
+            Push::Lagged { missed: 3 },
+            Push::Closing {
+                reason: "received SIGTERM".into(),
+            },
+        ];
+        for push in pushes {
+            let encoded = serde_json::to_value(&push).unwrap();
+            assert_eq!(encoded["push"], push.kind());
+            assert!(encoded.get("response").is_none());
+            let decoded: Push = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded, push);
         }
     }
 

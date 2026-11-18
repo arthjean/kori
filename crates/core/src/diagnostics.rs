@@ -15,15 +15,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
 use crate::capability::{CapabilityId, CapabilityRecord};
-use crate::ipc::{HardwareState, IpcError};
+use crate::ipc::{Attribution, HardwareState, IpcError};
 use crate::profile::Channel;
 use crate::telemetry::Collector;
 
 /// Bumped whenever [`DiagnosticsExport`] changes shape.
-pub const DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
+///
+/// 2: every event carries its `seq`, and the write events carry `by`.
+pub const DIAGNOSTICS_SCHEMA_VERSION: u32 = 2;
 
 /// Events retained in memory. Older events are dropped first.
 pub const DEFAULT_CAPACITY: usize = 512;
+
+/// Events an `events` request returns when it names no limit.
+pub const EVENTS_DEFAULT_LIMIT: u32 = 100;
+
+/// The most events one `events` request may ask for: the whole ring.
+pub const EVENTS_MAX_LIMIT: u32 = DEFAULT_CAPACITY as u32;
 
 /// Text substituted for anything the redactor recognizes as sensitive.
 pub const REDACTION_PLACEHOLDER: &str = "[redacted]";
@@ -81,14 +89,25 @@ pub enum EventKind {
         read_only: bool,
         reason: String,
     },
+    /// A connection wrote or subscribed for the first time.
+    ///
+    /// Not recorded when a connection merely opens: a one-shot read would
+    /// otherwise cost two events, and a few hundred of them would flush the
+    /// ring of everything that says what the hardware did.
     ClientAccepted {
+        connection: u64,
+        client: Option<String>,
         uid: u32,
         pid: i32,
     },
     ClientRejected {
         reason: String,
     },
+    /// A connection that wrote or subscribed closed, or any connection was
+    /// closed on a framing error.
     ClientDisconnected {
+        connection: u64,
+        client: Option<String>,
         detail: String,
     },
     RequestRejected {
@@ -97,12 +116,15 @@ pub enum EventKind {
     ProfileActivated {
         name: String,
         hardware: HardwareState,
+        by: Attribution,
     },
     ProfileSaved {
         name: String,
+        by: Attribution,
     },
     ProfileDeleted {
         name: String,
+        by: Attribution,
     },
     ConfigLoaded {
         path: String,
@@ -116,6 +138,7 @@ pub enum EventKind {
         hardware: HardwareState,
         /// Kernel attributes actually written. Zero means deduplicated.
         writes: u32,
+        by: Attribution,
     },
     /// A lighting program reached the controller, or was refused before it did.
     ///
@@ -128,14 +151,23 @@ pub enum EventKind {
         hardware: HardwareState,
         /// Reports actually sent. Zero means deduplicated or refused.
         writes: u32,
+        by: Attribution,
     },
-    /// A frame was rendered for the panel, or refused before it was.
+    /// A preset was applied to the panel or refused, or the stream that keeps
+    /// it current stopped or resumed.
+    ///
+    /// Not recorded for a frame the stream sends while it is healthy: at one a
+    /// second that event used to be nine in ten of the ring. The counters in
+    /// `status.display` carry that steady state instead.
     DisplayApplied {
         /// Preset mode, as its stable key rather than its label.
         mode: String,
         hardware: HardwareState,
         /// Frames actually sent. Zero means deduplicated or refused.
         frames: u32,
+        /// Who applied the preset. `None` for a change of the stream's own
+        /// state, which no command caused.
+        by: Option<Attribution>,
     },
     /// A committed curve is not what the device turned out to be running.
     ///
@@ -223,6 +255,12 @@ impl EventKind {
 /// One timestamped entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticEvent {
+    /// 1 for the first event a daemon records, then one more per event.
+    ///
+    /// The cursor a client reads from: the ring drops the oldest events, and a
+    /// gap between the sequence number a client last saw and the oldest one
+    /// still held is exactly the number of events it missed.
+    pub seq: u64,
     pub at_unix_ms: u64,
     pub severity: Severity,
     #[serde(flatten)]
@@ -306,6 +344,21 @@ pub struct DiagnosticsLog {
     events: VecDeque<DiagnosticEvent>,
     capacity: usize,
     redactor: Redactor,
+    /// The sequence number the next event is given.
+    next_seq: u64,
+}
+
+/// One page of the event log, as the `events` request answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventPage {
+    /// Sequence number of the oldest event still held, 0 when none is.
+    pub oldest_seq: u64,
+    /// Sequence number of the newest event recorded, 0 when none was.
+    pub latest_seq: u64,
+    /// Events after the requested cursor that the ring no longer holds.
+    pub missed: u64,
+    /// Oldest first.
+    pub events: Vec<DiagnosticEvent>,
 }
 
 impl Default for DiagnosticsLog {
@@ -324,6 +377,7 @@ impl DiagnosticsLog {
             events: VecDeque::with_capacity(capacity.min(DEFAULT_CAPACITY)),
             capacity,
             redactor: Redactor::new(),
+            next_seq: 1,
         }
     }
 
@@ -333,7 +387,10 @@ impl DiagnosticsLog {
     }
 
     pub fn record(&mut self, at_unix_ms: u64, kind: EventKind) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
         let event = DiagnosticEvent {
+            seq,
             at_unix_ms,
             severity: kind.severity(),
             kind,
@@ -354,6 +411,62 @@ impl DiagnosticsLog {
 
     pub fn events(&self) -> impl Iterator<Item = &DiagnosticEvent> {
         self.events.iter()
+    }
+
+    /// Sequence number of the newest event recorded, 0 before the first.
+    pub fn latest_seq(&self) -> u64 {
+        self.next_seq - 1
+    }
+
+    /// Sequence number of the oldest event still held, 0 when none is.
+    pub fn oldest_seq(&self) -> u64 {
+        self.events.front().map_or(0, |event| event.seq)
+    }
+
+    /// Up to `limit` events, swept of every registered secret.
+    ///
+    /// With a cursor, the events recorded after it, oldest first, so a client
+    /// pages forward by passing the last `seq` it read. `missed` counts the
+    /// events after the cursor that the ring dropped before they were asked
+    /// for. Without one, the newest `limit` events, since a client that never
+    /// looked wants what happened last rather than what happened first.
+    ///
+    /// The sweep is the same one an export runs. An event that cannot be swept
+    /// is withheld rather than returned intact, which is the direction a
+    /// redactor must fail in.
+    pub fn page(&self, after_seq: Option<u64>, limit: u32) -> EventPage {
+        let limit = limit as usize;
+        let (missed, selected): (u64, Vec<&DiagnosticEvent>) = match after_seq {
+            Some(cursor) => {
+                let oldest = self.oldest_seq();
+                let missed = if oldest > cursor.saturating_add(1) {
+                    oldest - cursor - 1
+                } else {
+                    0
+                };
+                let after = self
+                    .events
+                    .iter()
+                    .filter(|event| event.seq > cursor)
+                    .take(limit)
+                    .collect();
+                (missed, after)
+            }
+            None => {
+                let skip = self.events.len().saturating_sub(limit);
+                (0, self.events.iter().skip(skip).collect())
+            }
+        };
+        let events = selected
+            .into_iter()
+            .filter_map(|event| self.redactor.redacted(event))
+            .collect();
+        EventPage {
+            oldest_seq: self.oldest_seq(),
+            latest_seq: self.latest_seq(),
+            missed,
+            events,
+        }
     }
 
     /// Build an export with every secret removed from all of it.
@@ -464,11 +577,65 @@ mod tests {
                 i,
                 EventKind::ProfileSaved {
                     name: format!("p{i}"),
+                    by: Attribution::Daemon,
                 },
             );
         }
         assert_eq!(log.len(), 3);
         assert_eq!(log.events().next().unwrap().at_unix_ms, 7);
+    }
+
+    #[test]
+    fn events_are_numbered_from_one_and_paged_from_a_cursor() {
+        let mut log = DiagnosticsLog::with_capacity(4);
+        assert_eq!((log.oldest_seq(), log.latest_seq()), (0, 0));
+        for i in 0..10 {
+            log.record(
+                i,
+                EventKind::ProfileSaved {
+                    name: format!("p{i}"),
+                    by: Attribution::Daemon,
+                },
+            );
+        }
+        let seqs: Vec<u64> = log.events().map(|event| event.seq).collect();
+        assert_eq!(seqs, vec![7, 8, 9, 10]);
+
+        let page = log.page(Some(2), 100);
+        assert_eq!((page.oldest_seq, page.latest_seq), (7, 10));
+        assert_eq!(page.missed, 4, "events 3 to 6 are gone");
+        assert_eq!(page.events.len(), 4);
+
+        let page = log.page(Some(7), 2);
+        assert_eq!(page.missed, 0);
+        assert_eq!(
+            page.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![8, 9]
+        );
+
+        let page = log.page(None, 2);
+        assert_eq!(
+            page.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![9, 10],
+            "without a cursor the newest events come back"
+        );
+        assert!(log.page(Some(10), 100).events.is_empty());
+    }
+
+    #[test]
+    fn a_page_is_swept_of_registered_secrets() {
+        let mut log = DiagnosticsLog::default();
+        log.add_secret(SERIAL);
+        log.record(
+            1,
+            EventKind::OwnershipConflict {
+                device: Some(KRAKEN_BASE),
+                resource: format!("/dev/serial/by-id/usb-NZXT_{SERIAL}"),
+                detail: "held".into(),
+            },
+        );
+        let json = serde_json::to_string(&log.page(None, 10)).unwrap();
+        assert!(!json.contains(SERIAL), "{json}");
     }
 
     #[test]
@@ -618,13 +785,15 @@ mod tests {
                     reason: "readback failed".into()
                 },
                 writes: 1,
+                by: Attribution::Daemon,
             }
             .severity(),
             Severity::Error
         );
         assert_eq!(
             EventKind::ProfileSaved {
-                name: "Silent".into()
+                name: "Silent".into(),
+                by: Attribution::Daemon,
             }
             .severity(),
             Severity::Info

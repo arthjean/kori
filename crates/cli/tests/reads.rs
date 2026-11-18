@@ -51,12 +51,23 @@ fn every_read_command_prints_the_daemon_reply_and_changes_nothing() {
 
     // The two replies that hold no reading are compared whole with what the
     // library client receives on its own connection.
+    // `clients` is the one field that differs by construction: each answer
+    // lists the connection that asked for it, and these are two connections.
     let mut client = harness.client();
-    let status = korictl(harness.socket(), &["status"]).document();
-    assert_eq!(
-        status,
-        serde_json::to_value(Response::Status(Box::new(client.status().unwrap()))).unwrap()
+    let mut status = korictl(harness.socket(), &["status"]).document();
+    let mut expected =
+        serde_json::to_value(Response::Status(Box::new(client.status().unwrap()))).unwrap();
+    let listed = status.as_object_mut().unwrap().remove("clients").unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["client"] == "korictl"),
+        "{listed}"
     );
+    expected.as_object_mut().unwrap().remove("clients");
+    assert_eq!(status, expected);
     let profiles = korictl(harness.socket(), &["profiles"]).document();
     let (active, stored) = client.profiles().unwrap();
     assert_eq!(

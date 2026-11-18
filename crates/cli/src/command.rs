@@ -36,6 +36,10 @@ pub enum Action {
     Capabilities,
     Profiles,
     Diagnostics,
+    Events,
+    History,
+    /// Subscribe and print each push on its own line.
+    Watch,
     /// Hand a payload the operator wrote to the daemon inside one request
     /// frame, without decoding it here. `tag` is the request's wire name,
     /// `field` the member the payload travels in, `expected` the reply's kind.
@@ -58,7 +62,10 @@ impl Action {
             | Self::Telemetry
             | Self::Capabilities
             | Self::Profiles
-            | Self::Diagnostics => Access::Read,
+            | Self::Diagnostics
+            | Self::Events
+            | Self::History
+            | Self::Watch => Access::Read,
             Self::Forward { .. } | Self::ProfileActivate | Self::ProfileDelete => Access::Write,
         }
     }
@@ -83,11 +90,47 @@ impl Operand {
     }
 }
 
+/// An option a command takes after its words.
+#[derive(Debug)]
+pub struct Opt {
+    pub name: &'static str,
+    /// The label of the value it takes, or `None` for a flag.
+    pub value: Option<&'static str>,
+    /// Whether it may be given more than once.
+    pub repeat: bool,
+    pub summary: &'static str,
+}
+
+impl Opt {
+    /// The option as a usage line shows it.
+    pub fn synopsis(&self) -> String {
+        let mut text = self.name.to_string();
+        if let Some(value) = self.value {
+            text.push(' ');
+            text.push_str(value);
+        }
+        if self.repeat {
+            text.push_str("...");
+        }
+        text
+    }
+}
+
+/// The precondition every `set` command takes.
+const IF_REVISION: Opt = Opt {
+    name: "--if-revision",
+    value: Some("N"),
+    repeat: false,
+    summary: "Refuse with `conflict` unless the domain is still at revision N.",
+};
+
 /// One command: the words that select it, what it takes, what it does.
 #[derive(Debug)]
 pub struct Spec {
     pub words: &'static [&'static str],
     pub operand: Option<Operand>,
+    /// Options accepted after the words, in the order a usage line lists them.
+    pub options: &'static [Opt],
     pub summary: &'static str,
     pub action: Action,
 }
@@ -113,42 +156,135 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         words: &["version"],
         operand: None,
+        options: &[],
         summary: "This client's version and protocol, and the daemon's version when it answers.",
         action: Action::Version,
     },
     Spec {
         words: &["status"],
         operand: None,
+        options: &[],
         summary: "Daemon, device, ownership and committed state.",
         action: Action::Status,
     },
     Spec {
         words: &["telemetry"],
         operand: None,
+        options: &[],
         summary: "The most recent sampling pass.",
         action: Action::Telemetry,
     },
     Spec {
         words: &["capabilities"],
         operand: None,
+        options: &[],
         summary: "The versioned capability record of every allowlisted device.",
         action: Action::Capabilities,
     },
     Spec {
         words: &["profiles"],
         operand: None,
+        options: &[],
         summary: "Every stored profile and the active one.",
         action: Action::Profiles,
     },
     Spec {
         words: &["diagnostics"],
         operand: None,
+        options: &[],
         summary: "The redacted diagnostics export for an issue report.",
         action: Action::Diagnostics,
     },
     Spec {
+        words: &["events"],
+        operand: None,
+        options: &[
+            Opt {
+                name: "--after",
+                value: Some("SEQ"),
+                repeat: false,
+                summary: "Only events recorded after SEQ, oldest first. Without it, the newest.",
+            },
+            Opt {
+                name: "--limit",
+                value: Some("N"),
+                repeat: false,
+                summary: "At most N events (default 100, at most 512).",
+            },
+        ],
+        summary: "A page of the event log, numbered by seq.",
+        action: Action::Events,
+    },
+    Spec {
+        words: &["history"],
+        operand: None,
+        options: &[
+            Opt {
+                name: "--metric",
+                value: Some("METRIC"),
+                repeat: true,
+                summary: "Only this metric (cpu_load, cpu_temperature, gpu_load, gpu_temperature, \
+                          memory_used, liquid_temperature, pump_speed, fan_speed, pump_duty, \
+                          fan_duty). Default: all.",
+            },
+            Opt {
+                name: "--window",
+                value: Some("DURATION"),
+                repeat: false,
+                summary: "How far back: 90s, 15m, 24h or seconds. Default 15m.",
+            },
+            Opt {
+                name: "--step",
+                value: Some("DURATION"),
+                repeat: false,
+                summary: "Seconds per point: under 60 or whole minutes. Default 1s up to 15m, then 1m.",
+            },
+            Opt {
+                name: "--points",
+                value: None,
+                repeat: false,
+                summary: "Add the points, oldest first, beside each summary.",
+            },
+        ],
+        summary: "Recorded telemetry: min, avg, max and last per metric over a window.",
+        action: Action::History,
+    },
+    Spec {
+        words: &["watch"],
+        operand: None,
+        options: &[
+            Opt {
+                name: "--topic",
+                value: Some("TOPIC"),
+                repeat: true,
+                summary: "telemetry, status or events. Default: all three.",
+            },
+            Opt {
+                name: "--interval",
+                value: Some("DURATION"),
+                repeat: false,
+                summary: "Telemetry every DURATION, 1s to 60s. Default 1s.",
+            },
+            Opt {
+                name: "--count",
+                value: Some("N"),
+                repeat: false,
+                summary: "Exit 0 after N pushes, heartbeats not counted.",
+            },
+            Opt {
+                name: "--for",
+                value: Some("DURATION"),
+                repeat: false,
+                summary: "Exit 0 after DURATION. Without --count or --for, runs until stopped.",
+            },
+        ],
+        summary: "Subscribe and print one push per line, flushed as it arrives.",
+        action: Action::Watch,
+    },
+    Spec {
         words: &["set", "cooling"],
         operand: Some(Operand::Payload("PROGRAM")),
+        options: &[IF_REVISION],
         summary: "Apply a cooling program (the `program` of apply_program).",
         action: Action::Forward {
             tag: "apply_program",
@@ -159,6 +295,7 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         words: &["set", "lighting"],
         operand: Some(Operand::Payload("COMMAND")),
+        options: &[IF_REVISION],
         summary: "Apply a lighting program to one channel (the `command` of apply_lighting).",
         action: Action::Forward {
             tag: "apply_lighting",
@@ -169,6 +306,7 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         words: &["set", "display"],
         operand: Some(Operand::Payload("PRESET")),
+        options: &[IF_REVISION],
         summary: "Show a preset on the panel (the `preset` of apply_display).",
         action: Action::Forward {
             tag: "apply_display",
@@ -179,12 +317,14 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         words: &["profile", "activate"],
         operand: Some(Operand::Name),
+        options: &[],
         summary: "Make a stored profile active.",
         action: Action::ProfileActivate,
     },
     Spec {
         words: &["profile", "save"],
         operand: Some(Operand::Payload("PROFILE")),
+        options: &[],
         summary: "Store a profile, replacing one with the same name (the `profile` of save_profile).",
         action: Action::Forward {
             tag: "save_profile",
@@ -195,6 +335,7 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         words: &["profile", "delete"],
         operand: Some(Operand::Name),
+        options: &[],
         summary: "Remove a stored profile.",
         action: Action::ProfileDelete,
     },
@@ -209,6 +350,8 @@ pub struct Globals {
     pub timeout: Duration,
     /// Indent the JSON document. Nothing else about the output changes.
     pub pretty: bool,
+    /// Overrides `KORI_CLIENT` and the `korictl` default.
+    pub client: Option<String>,
 }
 
 impl Default for Globals {
@@ -217,6 +360,7 @@ impl Default for Globals {
             socket: None,
             timeout: DEFAULT_TIMEOUT,
             pretty: false,
+            client: None,
         }
     }
 }
@@ -232,6 +376,10 @@ pub const GLOBAL_OPTIONS: &[(&str, &str)] = &[
         "Longest wait on any one read or write. Default 5.",
     ),
     ("--pretty", "Indent the JSON output."),
+    (
+        "--client NAME",
+        "Name sent in the handshake. Defaults to $KORI_CLIENT, then korictl.",
+    ),
 ];
 
 /// A parsed command line.
@@ -240,6 +388,29 @@ pub struct Invocation {
     pub globals: Globals,
     pub spec: &'static Spec,
     pub operand: Option<String>,
+    /// The command's own options, in the order given. A flag carries `None`.
+    pub options: Vec<(&'static str, Option<String>)>,
+}
+
+impl Invocation {
+    /// Every value given for `name`, in order.
+    pub fn values(&self, name: &str) -> Vec<&str> {
+        self.options
+            .iter()
+            .filter(|(given, _)| *given == name)
+            .filter_map(|(_, value)| value.as_deref())
+            .collect()
+    }
+
+    /// The value of an option given at most once.
+    pub fn value(&self, name: &str) -> Option<&str> {
+        self.values(name).into_iter().next()
+    }
+
+    /// Whether a flag was given.
+    pub fn flag(&self, name: &str) -> bool {
+        self.options.iter().any(|(given, _)| *given == name)
+    }
 }
 
 /// Why a command line was refused, and the token responsible when there is one.
@@ -297,20 +468,24 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
                 }
                 globals.pretty = true;
             }
-            "--socket" | "--timeout" => {
+            "--socket" | "--timeout" | "--client" => {
                 let value = match inline {
                     Some(value) => value,
                     None => tokens.next().ok_or_else(|| {
                         UsageError::new(format!("{name} needs a value"), Some(name))
                     })?,
                 };
-                if name == "--socket" {
-                    if value.is_empty() {
-                        return Err(UsageError::new("--socket needs a path", Some(name)));
+                match name {
+                    "--socket" => {
+                        if value.is_empty() {
+                            return Err(UsageError::new("--socket needs a path", Some(name)));
+                        }
+                        globals.socket = Some(PathBuf::from(value));
                     }
-                    globals.socket = Some(PathBuf::from(value));
-                } else {
-                    globals.timeout = parse_timeout(&value)?;
+                    // Sent as given: the daemon is the one place a name is
+                    // judged, and its refusal names the rule.
+                    "--client" => globals.client = Some(value),
+                    _ => globals.timeout = parse_timeout(&value)?,
                 }
             }
             _ => {
@@ -363,21 +538,52 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
     };
 
     let mut positionals = Vec::new();
+    let mut options = Vec::new();
     let mut options_ended = false;
-    for token in tokens {
+    while let Some(token) = tokens.next() {
         if !options_ended && token == "--" {
             options_ended = true;
-        } else if !options_ended && looks_like_option(&token) {
+            continue;
+        }
+        if options_ended || !looks_like_option(&token) {
+            positionals.push(token);
+            continue;
+        }
+        let (name, inline) = match token.split_once('=') {
+            Some((name, value)) => (name, Some(value.to_string())),
+            None => (token.as_str(), None),
+        };
+        let Some(option) = spec.options.iter().find(|option| option.name == name) else {
             return Err(UsageError::new(
                 format!(
-                    "unknown option {token} for {}; global options go before the command",
+                    "unknown option {name} for {}; global options go before the command",
                     spec.words.join(" ")
                 ),
                 Some(&token),
             ));
-        } else {
-            positionals.push(token);
+        };
+        if !option.repeat && options.iter().any(|(given, _)| *given == option.name) {
+            return Err(UsageError::new(
+                format!("{name} is given more than once"),
+                Some(&token),
+            ));
         }
+        let value = match (option.value, inline) {
+            (None, None) => None,
+            (None, Some(_)) => {
+                return Err(UsageError::new(
+                    format!("{name} takes no value"),
+                    Some(&token),
+                ));
+            }
+            (Some(_), Some(value)) => Some(value),
+            (Some(label), None) => Some(
+                tokens
+                    .next()
+                    .ok_or_else(|| UsageError::new(format!("{name} needs {label}"), Some(name)))?,
+            ),
+        };
+        options.push((option.name, value));
     }
 
     let mut positionals = positionals.into_iter();
@@ -401,7 +607,37 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
         globals,
         spec,
         operand,
+        options,
     })
+}
+
+/// A whole number of seconds, written `90s`, `15m`, `24h` or as a bare number.
+///
+/// Nothing finer than a second: the history has no finer slot, and a fraction
+/// accepted here would be rounded somewhere the caller cannot see.
+pub fn parse_duration(option: &str, value: &str) -> Result<u32, UsageError> {
+    let refuse = || {
+        UsageError::new(
+            format!(
+                "{option} expects a duration such as 90s, 15m, 24h or a number of seconds, got {value}"
+            ),
+            Some(value),
+        )
+    };
+    let (digits, scale) = match value.char_indices().last() {
+        Some((index, 's')) => (&value[..index], 1),
+        Some((index, 'm')) => (&value[..index], 60),
+        Some((index, 'h')) => (&value[..index], 3_600),
+        _ => (value, 1),
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(refuse());
+    }
+    digits
+        .parse::<u32>()
+        .ok()
+        .and_then(|count| count.checked_mul(scale))
+        .ok_or_else(refuse)
 }
 
 /// A positive number of seconds, fractions allowed.
@@ -483,7 +719,7 @@ mod tests {
                 continue;
             };
             forwarded += 1;
-            let frame = crate::run::forward_frame(tag, field, sample(tag));
+            let frame = crate::run::forward_frame(tag, field, sample(tag), None);
             let request: Request = serde_json::from_value(frame).unwrap();
             let decoded_tag = serde_json::to_value(&request).unwrap()["request"].clone();
             assert_eq!(decoded_tag, tag, "{}", spec.synopsis());
@@ -553,6 +789,47 @@ mod tests {
         for (line, token) in cases {
             let error = parse_str(line).unwrap_err();
             assert_eq!(error.token.as_deref(), *token, "{line:?}: {error:?}");
+        }
+    }
+
+    #[test]
+    fn durations_are_whole_seconds_with_an_optional_unit() {
+        for (text, seconds) in [("90s", 90), ("15m", 900), ("24h", 86_400), ("45", 45)] {
+            assert_eq!(parse_duration("--window", text), Ok(seconds), "{text}");
+        }
+        for text in ["", "m", "1.5m", "-3s", "10d", "s15", "99999999999h"] {
+            let error = parse_duration("--window", text).unwrap_err();
+            assert_eq!(error.token.as_deref(), Some(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn command_options_are_checked_against_the_command() {
+        let parsed = parse_str(&[
+            "history",
+            "--metric",
+            "cpu_load",
+            "--metric=fan_speed",
+            "--points",
+            "--window",
+            "1h",
+        ])
+        .unwrap();
+        assert_eq!(parsed.values("--metric"), vec!["cpu_load", "fan_speed"]);
+        assert!(parsed.flag("--points"));
+        assert_eq!(parsed.value("--window"), Some("1h"));
+
+        for (line, token) in [
+            (&["history", "--points=yes"][..], "--points=yes"),
+            (
+                &["history", "--window", "1m", "--window", "2m"][..],
+                "--window",
+            ),
+            (&["history", "--window"][..], "--window"),
+            (&["events", "--points"][..], "--points"),
+        ] {
+            let error = parse_str(line).unwrap_err();
+            assert_eq!(error.token.as_deref(), Some(token), "{line:?}: {error:?}");
         }
     }
 

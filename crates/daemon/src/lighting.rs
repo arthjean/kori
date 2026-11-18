@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use kori_core::ipc::{ChannelState, HardwareState, LightingOutcome};
+use kori_core::ipc::{ChannelState, HardwareState, LightingOutcome, Revision};
 use kori_core::lighting::{
     LightingCommand, LightingError, LightingProgram, MIN_COMMAND_INTERVAL_MS,
 };
@@ -95,13 +95,17 @@ impl LightingExecutor {
     }
 
     /// Per-channel state for [`kori_core::ipc::DaemonStatus`].
-    pub fn state(&self) -> Vec<ChannelState> {
+    ///
+    /// The revision is the daemon's record rather than the executor's, so it
+    /// is asked for per channel.
+    pub fn state(&self, revision: impl Fn(u8) -> Revision) -> Vec<ChannelState> {
         self.channels
             .iter()
             .map(|channel| ChannelState {
                 channel: channel.index,
                 accessories: channel.accessories.clone(),
                 committed: self.committed.get(&channel.index).cloned(),
+                revision: revision(channel.index),
             })
             .collect()
     }
@@ -250,7 +254,7 @@ mod tests {
     /// is actually told about it.
     fn committed(executor: &LightingExecutor, channel: u8) -> Option<LightingProgram> {
         executor
-            .state()
+            .state(|_| Revision::initial())
             .into_iter()
             .find(|entry| entry.channel == channel)
             .and_then(|entry| entry.committed)
@@ -546,7 +550,7 @@ mod tests {
     fn an_absent_controller_refuses_without_pretending_to_write() {
         let mut executor = LightingExecutor::absent();
         assert_eq!(executor.channel_count(), 0);
-        assert!(executor.state().is_empty());
+        assert!(executor.state(|_| Revision::initial()).is_empty());
 
         let outcome = executor.apply(
             Instant::now(),
@@ -571,7 +575,7 @@ mod tests {
             },
         );
 
-        let state = executor.state();
+        let state = executor.state(|_| Revision::initial());
         assert_eq!(state.len(), 2);
         assert_eq!(state[0].channel, 1);
         assert_eq!(state[0].accessories, vec!["HUE 2 LED Strip 300 mm"]);

@@ -14,10 +14,12 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kori_core::client::{Client, ClientError};
-use kori_core::ipc::{FrameError, IpcError, MAX_FRAME_BYTES, PROTOCOL_VERSION, Response};
+use kori_core::ipc::{
+    FrameError, HEARTBEAT_INTERVAL, IpcError, MAX_FRAME_BYTES, PROTOCOL_VERSION, Push, Response,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -56,12 +58,26 @@ impl Exit {
 pub struct Environment {
     /// `KORI_SOCKET` when set, otherwise the per-user runtime directory.
     pub socket: PathBuf,
+    /// `KORI_CLIENT` when set and not empty.
+    pub client: Option<String>,
 }
+
+/// Environment variable the handshake name is read from.
+pub const CLIENT_NAME_ENV: &str = "KORI_CLIENT";
+
+/// The handshake name when neither `--client` nor `KORI_CLIENT` gives one.
+pub const DEFAULT_CLIENT_NAME: &str = "korictl";
 
 impl Environment {
     pub fn from_process() -> Self {
         Self {
             socket: kori_core::ipc::socket_path_from_env(),
+            // An empty variable reads as unset, as it does for the socket: a
+            // shell that exported it blank meant no override, not a name the
+            // daemon is certain to refuse.
+            client: std::env::var(CLIENT_NAME_ENV)
+                .ok()
+                .filter(|name| !name.is_empty()),
         }
     }
 }
@@ -203,6 +219,14 @@ fn usage_text() -> String {
             spec.synopsis(),
             spec.summary
         ));
+        for option in spec.options {
+            text.push_str(&format!(
+                "      {:width$}  {}\n",
+                option.synopsis(),
+                option.summary,
+                width = width.saturating_sub(4) + 7
+            ));
+        }
     }
     text.push_str("\nOptions:\n");
     let width = GLOBAL_OPTIONS
@@ -222,11 +246,49 @@ fn usage_text() -> String {
 }
 
 /// A request frame carrying a payload this client does not interpret.
-pub(crate) fn forward_frame(tag: &str, field: &str, payload: Value) -> Value {
+///
+/// `expect_revision` is the `--if-revision` precondition, added beside the
+/// payload rather than inside it because it belongs to the request, not to the
+/// program, command or preset it carries.
+pub(crate) fn forward_frame(
+    tag: &str,
+    field: &str,
+    payload: Value,
+    expect_revision: Option<u64>,
+) -> Value {
     let mut frame = serde_json::Map::new();
     frame.insert("request".into(), json!(tag));
     frame.insert(field.into(), payload);
+    if let Some(revision) = expect_revision {
+        frame.insert("expect_revision".into(), json!(revision));
+    }
     Value::Object(frame)
+}
+
+/// A usage failure naming the token responsible.
+fn usage(detail: String, token: impl ToString) -> Failure {
+    Failure::Usage(UsageError {
+        detail,
+        token: Some(token.to_string()),
+    })
+}
+
+/// A count, a sequence number or a revision: a non-negative integer.
+fn parse_count(option: &str, value: &str) -> Result<u64, Failure> {
+    value.parse::<u64>().map_err(|_| {
+        usage(
+            format!("{option} expects a non-negative integer, got {value}"),
+            value,
+        )
+    })
+}
+
+/// The integer an option was given, when it was given.
+fn optional_count(invocation: &Invocation, option: &str) -> Result<Option<u64>, Failure> {
+    invocation
+        .value(option)
+        .map(|value| parse_count(option, value))
+        .transpose()
 }
 
 /// Run one invocation. Returns the exit code; everything else is written.
@@ -241,6 +303,9 @@ pub fn run(
         Ok(invocation) => invocation,
         Err(usage) => return fail(&Failure::Usage(usage), false, stdout, stderr),
     };
+    if invocation.spec.action == Action::Watch {
+        return watch(&invocation, environment, stdout, stderr);
+    }
     let pretty = invocation.globals.pretty;
     match execute(&invocation, environment, stdin, stderr) {
         Ok(document) => {
@@ -275,6 +340,138 @@ fn emit(stdout: &mut dyn Write, document: &impl Serialize, pretty: bool) {
     let _ = stdout.flush();
 }
 
+/// Subscribe and print every push on its own line until a bound is reached.
+///
+/// The line format is the contract, so `--pretty` does not apply here: one
+/// compact JSON object per line, flushed as it arrives, is what `jq` and an
+/// agent reading a pipe both rely on.
+///
+/// Exits 0 when `--count` or `--for` is reached, and when the reader closes
+/// stdout (`korictl watch | head -1`), which is a reader that has what it
+/// wanted rather than a failure. Exits 5 after printing `closing` when the
+/// daemon shuts down, and 5 when the daemon goes silent past a heartbeat.
+fn watch(
+    invocation: &Invocation,
+    environment: &Environment,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Exit {
+    match start_watch(invocation, environment) {
+        Ok((subscription, bounds)) => stream_pushes(subscription, &bounds, stdout, stderr),
+        Err(failure) => fail(&failure, false, stdout, stderr),
+    }
+}
+
+/// When a watch stops on its own.
+struct Bounds {
+    count: Option<u64>,
+    until: Option<Instant>,
+}
+
+fn start_watch(
+    invocation: &Invocation,
+    environment: &Environment,
+) -> Result<(kori_core::client::Subscription, Bounds), Failure> {
+    let socket = invocation
+        .globals
+        .socket
+        .as_deref()
+        .unwrap_or(&environment.socket);
+    let timeout = invocation.globals.timeout;
+    let client = invocation
+        .globals
+        .client
+        .as_deref()
+        .or(environment.client.as_deref())
+        .unwrap_or(DEFAULT_CLIENT_NAME);
+
+    // Topics travel as typed and the daemon judges them, as it judges every
+    // other name this client forwards.
+    let mut topics: Vec<&str> = invocation.values("--topic");
+    if topics.is_empty() {
+        topics = vec!["telemetry", "status", "events"];
+    }
+    let mut frame = serde_json::Map::new();
+    frame.insert("request".into(), json!("subscribe"));
+    frame.insert("topics".into(), json!(topics));
+    if let Some(value) = invocation.value("--interval") {
+        let seconds = command::parse_duration("--interval", value).map_err(Failure::Usage)?;
+        frame.insert("interval_s".into(), json!(seconds));
+    }
+    let count = optional_count(invocation, "--count")?;
+    let until = match invocation.value("--for") {
+        Some(value) => {
+            let seconds = command::parse_duration("--for", value).map_err(Failure::Usage)?;
+            Some(Instant::now() + Duration::from_secs(u64::from(seconds)))
+        }
+        None => None,
+    };
+
+    let lost = |error| Failure::from_client(error, timeout);
+    let subscription = Client::connect_as(socket, timeout, Some(client))
+        .map_err(lost)?
+        .subscribe_frame(&Value::Object(frame))
+        .map_err(lost)?;
+    Ok((subscription, Bounds { count, until }))
+}
+
+fn stream_pushes(
+    mut subscription: kori_core::client::Subscription,
+    bounds: &Bounds,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Exit {
+    // What a dead daemon looks like: no heartbeat when one was due.
+    let silence = HEARTBEAT_INTERVAL + Duration::from_secs(1);
+    let mut printed = 0u64;
+    loop {
+        if bounds.count.is_some_and(|count| printed >= count) {
+            return Exit::Success;
+        }
+        let wait = match bounds.until {
+            Some(until) => {
+                let remaining = until.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Exit::Success;
+                }
+                remaining.min(silence)
+            }
+            None => silence,
+        };
+        if let Err(error) = subscription.set_read_timeout(wait) {
+            return fail(&Failure::from_client(error, wait), false, stdout, stderr);
+        }
+        let push = match subscription.next_push() {
+            Ok(push) => push,
+            Err(error) => {
+                if bounds.until.is_some_and(|until| Instant::now() >= until) {
+                    return Exit::Success;
+                }
+                return fail(&Failure::from_client(error, wait), false, stdout, stderr);
+            }
+        };
+        // A reader that closed its end has what it wanted.
+        if !emit_line(stdout, &push) {
+            return Exit::Success;
+        }
+        match push {
+            Push::Closing { reason } => {
+                let _ = writeln!(stderr, "korictl: the daemon closed the stream: {reason}");
+                return Exit::Lost;
+            }
+            Push::Heartbeat { .. } => {}
+            _ => printed += 1,
+        }
+    }
+}
+
+/// Write one push as one line and flush it. False when stdout is gone.
+fn emit_line(stdout: &mut dyn Write, push: &Push) -> bool {
+    serde_json::to_writer(&mut *stdout, push).is_ok()
+        && stdout.write_all(b"\n").is_ok()
+        && stdout.flush().is_ok()
+}
+
 /// What an invocation printed on success: the daemon's reply, or a document
 /// this client composed.
 #[derive(Serialize)]
@@ -297,6 +494,12 @@ fn execute(
         .unwrap_or(&environment.socket);
     let timeout = invocation.globals.timeout;
     let action = invocation.spec.action;
+    let client = invocation
+        .globals
+        .client
+        .as_deref()
+        .or(environment.client.as_deref())
+        .unwrap_or(DEFAULT_CLIENT_NAME);
 
     // A payload is read and checked to be JSON before anything is connected,
     // so a typo costs no request. Its contents are the daemon's to judge.
@@ -307,9 +510,20 @@ fn execute(
     let name = || invocation.operand.clone().unwrap_or_default();
 
     let lost = |error| Failure::from_client(error, timeout);
-    let connect = || Client::connect_with_timeout(socket, timeout).map_err(lost);
+    let connect = || Client::connect_as(socket, timeout, Some(client)).map_err(lost);
     let reply = match action {
-        Action::Version => return Ok(Document::Composed(version(socket, timeout, stderr))),
+        // Diverted in `run`, because a stream is many documents rather than
+        // one. Reaching here would be a wiring fault, and it is reported as
+        // one rather than streamed into the one-document contract.
+        Action::Watch => {
+            return Err(Failure::Usage(UsageError {
+                detail: "watch is a stream and cannot run as a single command".to_string(),
+                token: None,
+            }));
+        }
+        Action::Version => {
+            return Ok(Document::Composed(version(socket, timeout, client, stderr)));
+        }
         Action::Status => Response::Status(Box::new(connect()?.status().map_err(lost)?)),
         Action::Telemetry => Response::Telemetry(Box::new(connect()?.telemetry().map_err(lost)?)),
         Action::Capabilities => {
@@ -320,6 +534,41 @@ fn execute(
             Response::Profiles { active, profiles }
         }
         Action::Diagnostics => Response::Diagnostics(connect()?.diagnostics().map_err(lost)?),
+        Action::Events => {
+            let after = optional_count(invocation, "--after")?;
+            // Range-checked by the daemon, which owns the ceiling; a value too
+            // large for the wire type is the one thing refused here.
+            let limit = match optional_count(invocation, "--limit")? {
+                Some(limit) => Some(
+                    u32::try_from(limit)
+                        .map_err(|_| usage(format!("--limit {limit} is out of range"), limit))?,
+                ),
+                None => None,
+            };
+            Response::Events(connect()?.events(after, limit).map_err(lost)?)
+        }
+        Action::History => {
+            // The metric names travel as typed. An unknown one is the daemon's
+            // to refuse, so the list of metrics lives in one place.
+            let mut frame = serde_json::Map::new();
+            frame.insert("request".into(), json!("history"));
+            let metrics = invocation.values("--metric");
+            if !metrics.is_empty() {
+                frame.insert("metrics".into(), json!(metrics));
+            }
+            for (option, field) in [("--window", "window_s"), ("--step", "step_s")] {
+                if let Some(value) = invocation.value(option) {
+                    let seconds = command::parse_duration(option, value).map_err(Failure::Usage)?;
+                    frame.insert(field.into(), json!(seconds));
+                }
+            }
+            if invocation.flag("--points") {
+                frame.insert("points".into(), json!(true));
+            }
+            connect()?
+                .forward(&Value::Object(frame), "history")
+                .map_err(lost)?
+        }
         Action::ProfileActivate => {
             Response::Activated(connect()?.activate_profile(name()).map_err(lost)?)
         }
@@ -335,7 +584,8 @@ fn execute(
             field,
             expected,
         } => {
-            let frame = forward_frame(tag, field, payload.unwrap_or(Value::Null));
+            let expect_revision = optional_count(invocation, "--if-revision")?;
+            let frame = forward_frame(tag, field, payload.unwrap_or(Value::Null), expect_revision);
             connect()?.forward(&frame, expected).map_err(lost)?
         }
     };
@@ -346,8 +596,8 @@ fn execute(
 ///
 /// Always succeeds: the point of the command is to report what is installed,
 /// and "no daemon" is one of the answers.
-fn version(socket: &Path, timeout: Duration, stderr: &mut dyn Write) -> Value {
-    let daemon_version = match Client::connect_with_timeout(socket, timeout) {
+fn version(socket: &Path, timeout: Duration, client: &str, stderr: &mut dyn Write) -> Value {
+    let daemon_version = match Client::connect_as(socket, timeout, Some(client)) {
         Ok(client) => Some(client.daemon_version().to_string()),
         Err(error) => {
             let _ = writeln!(
@@ -394,6 +644,7 @@ mod tests {
     fn invoke(line: &[&str], stdin: &str) -> (Exit, String, String) {
         let environment = Environment {
             socket: PathBuf::from("/nonexistent/kori-test/kori.sock"),
+            client: None,
         };
         let mut out = Vec::new();
         let mut err = Vec::new();

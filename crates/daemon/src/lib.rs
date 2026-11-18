@@ -13,6 +13,7 @@
 pub mod config;
 pub mod cooling;
 pub mod display;
+pub mod history;
 pub mod lcd_probe;
 pub mod lighting;
 pub mod ownership;
@@ -22,6 +23,7 @@ pub mod rgb_probe;
 pub mod server;
 pub mod startup;
 pub mod state;
+pub mod stream;
 pub mod telemetry;
 
 use std::time::{SystemTime, UNIX_EPOCH};

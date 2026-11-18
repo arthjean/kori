@@ -144,7 +144,7 @@ fn the_last_curve_committed_survives_a_daemon_restart_and_is_reported() {
         );
         let status = client.status().unwrap();
         assert_eq!(
-            status.cooling.as_ref(),
+            status.cooling.committed.as_ref(),
             Some(&program),
             "the running client must be able to draw what it just committed"
         );
@@ -169,7 +169,7 @@ fn the_last_curve_committed_survives_a_daemon_restart_and_is_reported() {
     .unwrap();
 
     assert_eq!(
-        restarted.status().cooling.as_ref(),
+        restarted.status().cooling.committed.as_ref(),
         Some(&program),
         "the cooler must come back on the curve it was left on"
     );

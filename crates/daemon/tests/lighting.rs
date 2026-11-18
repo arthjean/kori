@@ -133,6 +133,7 @@ fn an_out_of_range_brightness_cannot_even_be_decoded() {
             &mut writer,
             &Request::Hello {
                 protocol_version: PROTOCOL_VERSION,
+                client: None,
             },
         )
         .unwrap();

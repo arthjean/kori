@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use kori_core::client::{Client, ClientError};
+use kori_core::client::{Client, ClientError, DEFAULT_TIMEOUT};
 use kori_core::display::DisplayPreset;
 use kori_core::ipc::{ApplyOutcome, HardwareState, LightingOutcome};
 use kori_core::lighting::LightingCommand;
@@ -475,8 +475,13 @@ fn wait_for_command(
     None
 }
 
+/// The name the window gives itself in the handshake.
+pub const WINDOW_CLIENT_NAME: &str = "kori";
+
 fn connect(socket: &std::path::Path) -> Result<Session, ClientError> {
-    let mut client = Client::connect(socket)?;
+    // The window names itself, so what it writes reads "kori" in the events and
+    // in `status`, beside the process ID the kernel vouches for.
+    let mut client = Client::connect_as(socket, DEFAULT_TIMEOUT, Some(WINDOW_CLIENT_NAME))?;
     let capabilities = Arc::new(client.capabilities()?);
     let profiles: Arc<[Profile]> = client.profiles()?.1.into();
     Ok(Session {
@@ -591,6 +596,37 @@ mod tests {
     use kori_core::ipc::{ChannelReadback, DisplayOutcome};
     use kori_core::lighting::Brightness;
     use kori_core::profile::Channel;
+
+    /// The window's writes read "kori" in the daemon's events because this is
+    /// the handshake the running feed sends. A listener stands in for the
+    /// daemon and reads the first frame the worker writes.
+    #[test]
+    fn the_running_feed_names_itself_kori_in_its_handshake() {
+        use std::io::BufRead;
+
+        let socket =
+            std::env::temp_dir().join(format!("kori-app-feed-name-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let (feed, _notifications) = Feed::spawn(socket.clone(), Duration::from_secs(5));
+
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(stream)
+            .read_line(&mut line)
+            .unwrap();
+        let hello: serde_json::Value = serde_json::from_str(&line).unwrap();
+        drop(feed);
+        let _ = std::fs::remove_file(&socket);
+
+        assert_eq!(hello["request"], "hello");
+        assert_eq!(hello["protocol_version"], kori_core::ipc::PROTOCOL_VERSION);
+        assert_eq!(hello["client"], WINDOW_CLIENT_NAME);
+        assert_eq!(WINDOW_CLIENT_NAME, "kori");
+    }
 
     #[test]
     fn a_command_ends_the_wait_instead_of_serving_out_the_interval() {

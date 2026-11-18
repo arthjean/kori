@@ -69,6 +69,32 @@ naming the file and the ceiling. The same file previously rendered or took the
 process out depending on how much memory was free, which is the behavior change
 the bump also marks.
 
+**10.** Gave the protocol what a second client needs, in one bump for the
+whole of the change because no tag has shipped it: a client name in `hello` and
+a connection number in its reply; `status.started_at_unix_ms` and
+`status.clients`; a `by` attribution on every write event; a `seq` on every
+event and the `events` request; the telemetry `history` request; the
+`subscribe` request and the `push` frames it turns a connection into; a
+`revision` and a `changed_by` on `status.cooling`, each `status.lighting`
+entry and `status.display`, with `expect_revision` on the three write requests
+and the typed `conflict` refusal; and the `frames_sent`, `failed_transfers` and
+`last_frame_at_unix_ms` counters on `status.display`. `status.cooling` changed
+shape: it was the committed program itself and is now an object holding it as
+`committed` beside its revision. The diagnostics export carries the same events,
+so `DIAGNOSTICS_SCHEMA_VERSION` moved from 1 to 2 with this bump for their `seq`
+and `by` fields.
+
+What a silent mismatch would get wrong is worse than a parse failure. A version
+9 client reading a version 10 `status` would take `cooling` for a program and
+fail to draw the curve, or, with a lenient decoder, draw none and let the
+operator overwrite the one running. A version 9 window would keep resending its
+pending edit over an agent's change, because it cannot see the revision that
+says someone else wrote. A version 9 reader of the event log expects a
+`display_applied` per frame and would read the healthy stream, which no longer
+records one, as a frozen panel. The probe script under
+`~/.local/state/kori-probe/` hard-codes 9 and is refused at the handshake;
+`korictl watch --topic status --topic events` replaces it.
+
 ## Capability schema version
 
 `kori_core::capability::CAPABILITY_SCHEMA_VERSION`. Bumped whenever the shape of

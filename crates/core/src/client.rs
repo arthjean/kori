@@ -12,8 +12,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::ipc::{
-    DaemonStatus, FrameError, IpcError, PROTOCOL_VERSION, Request, Response, read_frame,
-    write_frame,
+    DaemonStatus, FrameError, HEARTBEAT_INTERVAL, IpcError, PROTOCOL_VERSION, Push, Request,
+    Response, Topic, read_frame, write_frame,
 };
 
 /// Why talking to the daemon failed.
@@ -74,6 +74,7 @@ pub struct Client {
     reader: BufReader<UnixStream>,
     writer: BufWriter<UnixStream>,
     daemon_version: String,
+    connection: u64,
 }
 
 impl Client {
@@ -89,6 +90,20 @@ impl Client {
     /// conversation as a whole. A zero duration is refused by the kernel and
     /// reported as an unreachable socket rather than silently meaning "forever".
     pub fn connect_with_timeout(path: &Path, timeout: Duration) -> Result<Self, ClientError> {
+        Self::connect_as(path, timeout, None)
+    }
+
+    /// Connect and handshake under a client name.
+    ///
+    /// The name is sent as given and judged by the daemon, which refuses one
+    /// outside [`crate::ipc::validate_client_name`] with `malformed` and closes
+    /// the connection. It labels this connection's writes in events and in
+    /// `status`; the process ID beside it comes from the kernel.
+    pub fn connect_as(
+        path: &Path,
+        timeout: Duration,
+        client: Option<&str>,
+    ) -> Result<Self, ClientError> {
         let unreachable = |source| ClientError::Unreachable {
             path: path.display().to_string(),
             source,
@@ -112,28 +127,40 @@ impl Client {
         // has read yet.
         let hello = Request::Hello {
             protocol_version: PROTOCOL_VERSION,
+            client: client.map(str::to_string),
         };
         write_frame(&mut writer, &hello).map_err(ClientError::from_write)?;
-        let daemon_version = match read_frame(&mut reader).map_err(ClientError::Disconnected)? {
-            Response::Hello { daemon_version, .. } => daemon_version,
-            Response::Error(error) => return Err(ClientError::Refused(error)),
-            other => {
-                return Err(ClientError::Unexpected {
-                    expected: "hello",
-                    actual: other.kind(),
-                });
-            }
-        };
+        let (daemon_version, connection) =
+            match read_frame(&mut reader).map_err(ClientError::Disconnected)? {
+                Response::Hello {
+                    daemon_version,
+                    connection,
+                    ..
+                } => (daemon_version, connection),
+                Response::Error(error) => return Err(ClientError::Refused(error)),
+                other => {
+                    return Err(ClientError::Unexpected {
+                        expected: "hello",
+                        actual: other.kind(),
+                    });
+                }
+            };
 
         Ok(Self {
             reader,
             writer,
             daemon_version,
+            connection,
         })
     }
 
     pub fn daemon_version(&self) -> &str {
         &self.daemon_version
+    }
+
+    /// The number the daemon gave this connection in its handshake.
+    pub fn connection(&self) -> u64 {
+        self.connection
     }
 
     /// Send one request and read its response.
@@ -221,7 +248,10 @@ impl Client {
         program: crate::profile::CoolingProgram,
     ) -> Result<crate::ipc::ApplyOutcome, ClientError> {
         self.expect(
-            Request::ApplyProgram { program },
+            Request::ApplyProgram {
+                program,
+                expect_revision: None,
+            },
             "applied",
             |response| match response {
                 Response::Applied(outcome) => Some(*outcome),
@@ -236,7 +266,10 @@ impl Client {
         command: crate::lighting::LightingCommand,
     ) -> Result<crate::ipc::LightingOutcome, ClientError> {
         self.expect(
-            Request::ApplyLighting { command },
+            Request::ApplyLighting {
+                command,
+                expect_revision: None,
+            },
             "lit",
             |response| match response {
                 Response::Lit(outcome) => Some(outcome),
@@ -251,7 +284,10 @@ impl Client {
         preset: crate::display::DisplayPreset,
     ) -> Result<crate::ipc::DisplayOutcome, ClientError> {
         self.expect(
-            Request::ApplyDisplay { preset },
+            Request::ApplyDisplay {
+                preset,
+                expect_revision: None,
+            },
             "shown",
             |response| match response {
                 Response::Shown(outcome) => Some(*outcome),
@@ -322,12 +358,141 @@ impl Client {
         )
     }
 
+    /// A page of the event log: after `after_seq` when given, the newest
+    /// events otherwise.
+    pub fn events(
+        &mut self,
+        after_seq: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<crate::diagnostics::EventPage, ClientError> {
+        self.expect(
+            Request::Events { after_seq, limit },
+            "events",
+            |response| match response {
+                Response::Events(page) => Some(page),
+                _ => None,
+            },
+        )
+    }
+
+    /// Recorded telemetry. Every argument left `None` takes the daemon's
+    /// default.
+    pub fn history(
+        &mut self,
+        metrics: Option<Vec<crate::history::HistoryMetric>>,
+        window_s: Option<u32>,
+        step_s: Option<u32>,
+        points: bool,
+    ) -> Result<crate::history::HistoryReply, ClientError> {
+        let request = Request::History {
+            metrics,
+            window_s,
+            step_s,
+            points: Some(points),
+        };
+        self.expect(request, "history", |response| match response {
+            Response::History(reply) => Some(*reply),
+            _ => None,
+        })
+    }
+
+    /// Turn this connection into a stream of pushes.
+    ///
+    /// Consumes the client: once subscribed, the connection carries nothing
+    /// but [`Push`] frames, and closing it is how a subscriber unsubscribes.
+    pub fn subscribe(
+        self,
+        topics: Vec<Topic>,
+        interval_s: Option<u32>,
+        after_seq: Option<u64>,
+    ) -> Result<Subscription, ClientError> {
+        let request = Request::Subscribe {
+            topics,
+            interval_s,
+            after_seq,
+        };
+        let frame = serde_json::to_value(&request).map_err(|error| {
+            ClientError::Refused(IpcError::Malformed {
+                detail: error.to_string(),
+            })
+        })?;
+        self.subscribe_frame(&frame)
+    }
+
+    /// The same, from a frame the caller assembled and does not interpret.
+    ///
+    /// For a command line handing on topics an operator typed: an unknown
+    /// topic is the daemon's to refuse.
+    pub fn subscribe_frame(
+        mut self,
+        frame: &serde_json::Value,
+    ) -> Result<Subscription, ClientError> {
+        let (topics, interval_s) = match self.forward(frame, "subscribed")? {
+            Response::Subscribed { topics, interval_s } => (topics, interval_s),
+            other => {
+                return Err(ClientError::Unexpected {
+                    expected: "subscribed",
+                    actual: other.kind(),
+                });
+            }
+        };
+        let mut subscription = Subscription {
+            reader: self.reader,
+            _writer: self.writer,
+            topics,
+            interval_s,
+        };
+        // A read that waits for a heartbeat must outlast it, whatever bound
+        // the caller set for single requests.
+        subscription.set_read_timeout(HEARTBEAT_INTERVAL + std::time::Duration::from_secs(1))?;
+        Ok(subscription)
+    }
+
     /// Every stored profile plus the active one.
     pub fn profiles(&mut self) -> Result<(String, Vec<crate::profile::Profile>), ClientError> {
         self.expect(Request::Profiles, "profiles", |response| match response {
             Response::Profiles { active, profiles } => Some((active, profiles)),
             _ => None,
         })
+    }
+}
+
+/// A connection the daemon pushes frames on.
+///
+/// Dropping it closes the connection, which is the whole of unsubscribing.
+pub struct Subscription {
+    reader: BufReader<UnixStream>,
+    /// Held so the connection stays open in both directions until the
+    /// subscription is dropped. Nothing is written on it.
+    _writer: BufWriter<UnixStream>,
+    topics: Vec<Topic>,
+    interval_s: u32,
+}
+
+impl Subscription {
+    /// The topics the daemon confirmed, deduplicated.
+    pub fn topics(&self) -> &[Topic] {
+        &self.topics
+    }
+
+    pub fn interval_s(&self) -> u32 {
+        self.interval_s
+    }
+
+    /// Bound the wait for the next push.
+    ///
+    /// Defaults to one second past [`HEARTBEAT_INTERVAL`], which is how a dead
+    /// daemon is told from a quiet one.
+    pub fn set_read_timeout(&mut self, timeout: Duration) -> Result<(), ClientError> {
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(timeout))
+            .map_err(|error| ClientError::Disconnected(FrameError::Io(error)))
+    }
+
+    /// The next frame the daemon pushed.
+    pub fn next_push(&mut self) -> Result<Push, ClientError> {
+        read_frame(&mut self.reader).map_err(ClientError::Disconnected)
     }
 }
 

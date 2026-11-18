@@ -352,7 +352,7 @@ impl Shell {
         let Some(program) = program_to_adopt(
             self.link
                 .status()
-                .and_then(|status| status.cooling.as_ref()),
+                .and_then(|status| status.cooling.committed.as_ref()),
             self.committed.as_ref(),
             editing,
         ) else {

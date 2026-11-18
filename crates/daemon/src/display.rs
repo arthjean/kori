@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 
 use kori_core::capability::LcdPanel;
 use kori_core::display::{DisplayError, DisplayPreset, MetricSample};
-use kori_core::ipc::{DisplayOutcome, DisplayState, HardwareState};
+use kori_core::ipc::{DisplayOutcome, DisplayState, HardwareState, Revision};
 use kori_core::lighting::Brightness;
 use kori_hardware_linux::lcd::{LcdError, LcdLink};
 
@@ -74,6 +74,12 @@ pub struct DisplayExecutor {
     faulted: Option<Fault>,
     /// Frames discarded because a newer sample replaced them.
     dropped: u64,
+    /// Frames the panel took, for the life of the executor.
+    frames_sent: u64,
+    /// Transfers that failed, for the life of the executor.
+    failed_transfers: u64,
+    /// When the panel last took a frame.
+    last_frame_at_unix_ms: Option<u64>,
     /// The animation playing, when the active preset names one.
     animation: Option<Animation>,
 }
@@ -138,6 +144,9 @@ impl DisplayExecutor {
             brightness: None,
             faulted: None,
             dropped: 0,
+            frames_sent: 0,
+            failed_transfers: 0,
+            last_frame_at_unix_ms: None,
             animation: None,
         }
     }
@@ -212,14 +221,25 @@ impl DisplayExecutor {
     }
 
     /// Per-panel state for [`kori_core::ipc::DaemonStatus`].
-    pub fn state(&self) -> DisplayState {
+    ///
+    /// The revision is the daemon's record of the domain, passed in.
+    pub fn state(&self, revision: Revision) -> DisplayState {
         DisplayState {
             panel: self.panel.clone(),
             committed: self.committed().cloned(),
             streaming: self.is_streaming(),
+            revision,
             faulted: self.faulted.as_ref().map(|fault| fault.reason.clone()),
             dropped_frames: self.dropped,
+            frames_sent: self.frames_sent,
+            failed_transfers: self.failed_transfers,
+            last_frame_at_unix_ms: self.last_frame_at_unix_ms,
         }
+    }
+
+    /// Why the stream is stopped, while it is.
+    pub fn fault_reason(&self) -> Option<&str> {
+        self.faulted.as_ref().map(|fault| fault.reason.as_str())
     }
 
     /// Count one sample that arrived too late to become a frame.
@@ -443,6 +463,8 @@ impl DisplayExecutor {
 
         match link.send_frame(&frame) {
             Ok(_) => {
+                self.frames_sent = self.frames_sent.saturating_add(1);
+                self.last_frame_at_unix_ms = Some(crate::now_unix_ms());
                 self.committed = Some(Committed {
                     preset: preset.clone(),
                     frame,
@@ -475,6 +497,7 @@ impl DisplayExecutor {
         brightness_sent: bool,
     ) -> DisplayOutcome {
         self.committed = None;
+        self.failed_transfers = self.failed_transfers.saturating_add(1);
         DisplayOutcome {
             preset: preset.clone(),
             hardware: HardwareState::Uncertain {
@@ -730,8 +753,8 @@ mod tests {
         executor
             .apply(&preset, &samples(Some(50.0), Some(40.0)))
             .unwrap();
-        assert!(executor.state().streaming);
-        assert_eq!(executor.state().faulted, None);
+        assert!(executor.state(Revision::initial()).streaming);
+        assert_eq!(executor.state(Revision::initial()).faulted, None);
 
         let start = Instant::now();
         bulk.fail_with(UsbfsError::PermissionDenied {
@@ -743,7 +766,7 @@ mod tests {
         // equally what a panel nobody has written to reports, so a screen with
         // only the flag could not tell a fault from an idle panel, and could
         // not know it has a recovery to offer.
-        let state = executor.state();
+        let state = executor.state(Revision::initial());
         assert!(!state.streaming);
         let reason = state.faulted.expect("a stopped stream says why it stopped");
         assert!(reason.contains("udev"), "{reason}");
@@ -758,7 +781,7 @@ mod tests {
             &samples(Some(61.0), Some(40.0)),
         );
         assert!(
-            executor.state().faulted.is_some(),
+            executor.state(Revision::initial()).faulted.is_some(),
             "a faulted stream must not restart itself on the next tick"
         );
         assert_eq!(pictures(&bulk), sent, "nothing was sent inside the wait");
@@ -767,8 +790,8 @@ mod tests {
         executor
             .apply(&preset, &samples(Some(62.0), Some(40.0)))
             .unwrap();
-        assert_eq!(executor.state().faulted, None);
-        assert!(executor.state().streaming);
+        assert_eq!(executor.state(Revision::initial()).faulted, None);
+        assert!(executor.state(Revision::initial()).streaming);
     }
 
     #[test]
@@ -805,7 +828,7 @@ mod tests {
             &samples(Some(62.0), Some(40.0)),
         );
         assert!(
-            executor.state().faulted.is_some(),
+            executor.state(Revision::initial()).faulted.is_some(),
             "the second wait is longer than the first, not shorter"
         );
         assert_eq!(pictures(&bulk), sent, "nothing was sent inside the wait");
@@ -820,8 +843,8 @@ mod tests {
             .expect("the retry sends a frame");
         assert_eq!(outcome.hardware, HardwareState::Confirmed);
         assert_eq!(outcome.frames, 1);
-        assert_eq!(executor.state().faulted, None);
-        assert!(executor.state().streaming);
+        assert_eq!(executor.state(Revision::initial()).faulted, None);
+        assert!(executor.state(Revision::initial()).streaming);
     }
 
     #[test]
@@ -844,7 +867,7 @@ mod tests {
     fn an_absent_panel_refuses_without_pretending_to_write() {
         let mut executor = DisplayExecutor::absent();
         assert_eq!(
-            executor.state().panel,
+            executor.state(Revision::initial()).panel,
             None,
             "a panel nothing answered for must not be given a geometry"
         );
@@ -857,7 +880,7 @@ mod tests {
         assert_eq!(executor.committed(), None);
 
         // And it never claims to be streaming, whatever the caller asks for.
-        assert!(!executor.state().streaming);
+        assert!(!executor.state(Revision::initial()).streaming);
     }
 
     #[test]
@@ -880,10 +903,10 @@ mod tests {
     #[test]
     fn dropped_frames_are_counted_rather_than_queued() {
         let (mut executor, _bulk) = executor();
-        assert_eq!(executor.state().dropped_frames, 0);
+        assert_eq!(executor.state(Revision::initial()).dropped_frames, 0);
         executor.drop_frame();
         executor.drop_frame();
-        assert_eq!(executor.state().dropped_frames, 2);
+        assert_eq!(executor.state(Revision::initial()).dropped_frames, 2);
     }
 
     #[test]
@@ -894,7 +917,7 @@ mod tests {
             .apply(&preset, &samples(Some(50.0), Some(40.0)))
             .unwrap();
 
-        let state = executor.state();
+        let state = executor.state(Revision::initial());
         assert_eq!(state.panel.map(|panel| panel.width), Some(240));
         assert_eq!(state.committed.as_ref(), Some(&preset));
         assert!(state.streaming);
@@ -909,7 +932,7 @@ mod tests {
         assert_eq!(outcome.frames, 1, "the first picture goes out at once");
         assert_eq!(pictures(&bulk), 1);
         assert!(
-            executor.state().streaming,
+            executor.state(Revision::initial()).streaming,
             "an animation is the panel moving on its own, which is what streaming means"
         );
         assert!(
@@ -955,7 +978,7 @@ mod tests {
 
         executor.advance_animation(due);
         assert_eq!(pictures(&bulk), 2, "the second picture landed on its due");
-        assert_eq!(executor.state().dropped_frames, 0);
+        assert_eq!(executor.state(Revision::initial()).dropped_frames, 0);
     }
 
     #[test]
@@ -980,7 +1003,7 @@ mod tests {
             "one picture went out, not the five that came due"
         );
         assert_eq!(
-            executor.state().dropped_frames,
+            executor.state(Revision::initial()).dropped_frames,
             4,
             "the frames that were skipped are counted rather than hidden"
         );
@@ -1001,7 +1024,7 @@ mod tests {
             due = executor.advance_animation(due).expect("still playing");
         }
         assert_eq!(pictures(&bulk), 3);
-        assert!(executor.state().streaming);
+        assert!(executor.state(Revision::initial()).streaming);
     }
 
     #[test]
@@ -1025,7 +1048,7 @@ mod tests {
             "a failed transfer stops the clock rather than returning a next due"
         );
 
-        let state = executor.state();
+        let state = executor.state(Revision::initial());
         assert!(!state.streaming);
         assert!(state.faulted.is_some(), "the stop names itself");
         assert_eq!(

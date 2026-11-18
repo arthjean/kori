@@ -123,6 +123,7 @@ fn an_out_of_range_duty_is_refused_with_its_range_and_writes_nothing() {
                 pump: MIN_PUMP_DUTY - 1,
                 fan: 90,
             },
+            expect_revision: None,
         })
         .unwrap();
     match response {
@@ -196,6 +197,7 @@ fn a_non_monotonic_curve_is_refused_before_the_first_point_is_written() {
                 pump: curve,
                 fan: curve,
             },
+            expect_revision: None,
         })
         .unwrap();
     match response {
@@ -226,6 +228,7 @@ fn applying_without_write_permission_is_refused_and_touches_nothing() {
     let response = client
         .request(Request::ApplyProgram {
             program: CoolingProgram::Fixed { pump: 180, fan: 90 },
+            expect_revision: None,
         })
         .unwrap();
     match response {

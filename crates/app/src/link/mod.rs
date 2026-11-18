@@ -310,6 +310,8 @@ pub(crate) mod fixture {
             status: Arc::new(DaemonStatus {
                 daemon_version: "0.1.0".into(),
                 protocol_version: PROTOCOL_VERSION,
+                started_at_unix_ms: 0,
+                clients: Vec::new(),
                 access,
                 devices: vec![DeviceStatus {
                     id: KRAKEN_BASE,
@@ -332,14 +334,21 @@ pub(crate) mod fixture {
                 }],
                 active_profile: "Onboard safe".into(),
                 config: ConfigState::Loaded,
-                cooling: None,
+                cooling: kori_core::ipc::CoolingState {
+                    committed: None,
+                    revision: kori_core::ipc::Revision::initial(),
+                },
                 lighting: Vec::new(),
                 display: kori_core::ipc::DisplayState {
                     panel: None,
                     committed: None,
                     streaming: false,
+                    revision: kori_core::ipc::Revision::initial(),
                     faulted: None,
                     dropped_frames: 0,
+                    frames_sent: 0,
+                    failed_transfers: 0,
+                    last_frame_at_unix_ms: None,
                 },
                 socket_path: "/run/user/1000/kori/kori.sock".into(),
             }),

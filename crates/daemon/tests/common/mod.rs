@@ -55,6 +55,8 @@ pub struct Machine {
     pub rgb: RgbBackend,
     /// Where the daemon's frames go.
     pub lcd: LcdBackend,
+    /// Silence after which a subscriber is sent a heartbeat.
+    pub heartbeat: Duration,
 }
 
 impl Default for Machine {
@@ -69,6 +71,7 @@ impl Default for Machine {
             interval: FAST_INTERVAL,
             rgb: RgbBackend::None,
             lcd: LcdBackend::None,
+            heartbeat: kori_core::ipc::HEARTBEAT_INTERVAL,
         }
     }
 }
@@ -80,6 +83,9 @@ pub struct Harness {
     pub fake: FakeSysfs,
     pub hwmon: PathBuf,
     pub proc_root: PathBuf,
+    /// The state the server serves, for a test that reads it after the
+    /// server stopped. Nothing reaches into it while the server runs.
+    pub daemon: std::sync::Arc<std::sync::Mutex<Daemon>>,
     shutdown: ShutdownHandle,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -185,8 +191,11 @@ impl Harness {
         // panel redraw, so a test that waits on the daemon noticing something
         // waits on this. At the shipped one second per pass every such test
         // would spend a real second doing nothing.
-        let server = Server::attach(listener, daemon).with_frame_interval(machine.interval);
+        let server = Server::attach(listener, daemon)
+            .with_frame_interval(machine.interval)
+            .with_heartbeat(machine.heartbeat);
         let shutdown = server.shutdown_handle();
+        let daemon = server.daemon();
         let thread = std::thread::spawn(move || server.run());
 
         // The socket exists before bind returns, so a connect cannot race it.
@@ -196,8 +205,17 @@ impl Harness {
             fake,
             hwmon,
             proc_root,
+            daemon,
             shutdown,
             thread: Some(thread),
+        }
+    }
+
+    /// Run the orderly shutdown and wait for the server to return.
+    pub fn stop(&mut self) {
+        self.shutdown.stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 
@@ -308,7 +326,13 @@ pub fn read_attribute(hwmon: &Path, attribute: &str) -> String {
 
 /// Send an Apply and return the outcome the daemon reported.
 pub fn apply(client: &mut Client, program: CoolingProgram) -> kori_core::ipc::ApplyOutcome {
-    match client.request(Request::ApplyProgram { program }).unwrap() {
+    match client
+        .request(Request::ApplyProgram {
+            program,
+            expect_revision: None,
+        })
+        .unwrap()
+    {
         Response::Applied(outcome) => *outcome,
         other => panic!("expected an apply outcome, got {other:?}"),
     }

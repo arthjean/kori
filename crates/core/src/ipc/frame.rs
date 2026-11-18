@@ -106,6 +106,7 @@ mod tests {
         let mut buffer = Vec::new();
         let request = Request::Hello {
             protocol_version: PROTOCOL_VERSION,
+            client: Some("korictl".into()),
         };
         write_frame(&mut buffer, &request).unwrap();
         assert_eq!(buffer.last(), Some(&b'\n'));

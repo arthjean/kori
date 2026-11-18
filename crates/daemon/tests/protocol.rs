@@ -76,6 +76,7 @@ fn a_mismatched_protocol_version_is_refused() {
         &mut writer,
         &Request::Hello {
             protocol_version: PROTOCOL_VERSION + 99,
+            client: None,
         },
     )
     .unwrap();
@@ -211,6 +212,7 @@ fn the_daemon_survives_a_client_that_disappears_mid_request() {
             &mut writer,
             &Request::Hello {
                 protocol_version: PROTOCOL_VERSION,
+                client: None,
             },
         )
         .unwrap();

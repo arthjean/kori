@@ -457,6 +457,7 @@ mod tests {
             channel,
             accessories: accessories.iter().map(|name| name.to_string()).collect(),
             committed: None,
+            revision: kori_core::ipc::Revision::initial(),
         }
     }
 
